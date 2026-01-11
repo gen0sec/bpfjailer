@@ -1,0 +1,13 @@
+[package]
+name = "bpfjailer-client"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bpfjailer-common = { path = "../bpfjailer-common" }
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+bytes = { workspace = true }
+nix = { workspace = true }

@@ -1,0 +1,20 @@
+[package]
+name = "test-task-storage"
+version = "0.1.0"
+edition = "2021"
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "test-task-storage"
+path = "src/main.rs"
+
+[dependencies]
+libbpf-rs = "0.21"
+libbpf-sys = "1.4"
+anyhow = "1.0"
+log = "0.4"
+env_logger = "0.11"

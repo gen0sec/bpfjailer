@@ -1,0 +1,113 @@
+use anyhow::{Context, Result};
+use bpfjailer_common::{NetworkRule, PodId, PolicyFlags, RoleId};
+use log::{debug, info, warn};
+use std::sync::Arc;
+use crate::bpf_loader::BpfJailerBpf;
+
+// Protocol constants
+pub const PROTO_TCP: u8 = 6;
+pub const PROTO_UDP: u8 = 17;
+
+// Direction constants
+pub const DIR_BIND: u8 = 0;
+pub const DIR_CONNECT: u8 = 1;
+
+pub struct ProcessTracker {
+    bpf: Arc<BpfJailerBpf>,
+}
+
+// Convert PolicyFlags to u8 for BPF map
+// bit 0 (0x01) = allow_file_access
+// bit 1 (0x02) = allow_network
+// bit 2 (0x04) = allow_exec
+fn policy_flags_to_u8(flags: &PolicyFlags) -> u8 {
+    let mut result = 0u8;
+    if flags.allow_file_access {
+        result |= 0x01;
+    }
+    if flags.allow_network {
+        result |= 0x02;
+    }
+    if flags.allow_exec {
+        result |= 0x04;
+    }
+    result
+}
+
+impl ProcessTracker {
+    pub fn new(bpf: Arc<BpfJailerBpf>) -> Result<Self> {
+        Ok(Self { bpf })
+    }
+
+    pub fn enroll_process(&self, pid: u32, pod_id: PodId, role_id: RoleId) -> Result<()> {
+        info!("Enrolling process {} into pod {} with role {}", pid, pod_id.0, role_id.0);
+
+        // Update pod_to_role mapping
+        self.bpf.update_pod_role(pod_id.0, role_id.0)
+            .context("Failed to insert pod_to_role mapping")?;
+
+        // Add to pending_enrollments map - BPF will migrate to task_storage
+        // on the next syscall (file_open, exec, etc.)
+        self.bpf.enroll_pending_process(pid, pod_id.0, role_id.0)
+            .context("Failed to add pending enrollment")?;
+
+        info!("Process {} enrolled successfully (pending migration to task_storage)", pid);
+        Ok(())
+    }
+
+    pub fn get_process_info(&self, pid: u32) -> Result<Option<(PodId, RoleId)>> {
+        // Task storage is managed by kernel, we can't directly query it from userspace
+        // This would need to be implemented via a separate eBPF program or map
+        debug!("Querying process info for PID {}", pid);
+        Ok(None)
+    }
+
+    #[allow(dead_code)]
+    pub fn update_role_flags(&self, role_id: RoleId, flags: u8) -> Result<()> {
+        self.bpf.update_role_flags(role_id.0, flags)
+            .context("Failed to update role flags")?;
+        Ok(())
+    }
+
+    pub fn set_role_policy(&self, role_id: RoleId, flags: &PolicyFlags) -> Result<()> {
+        let flags_u8 = policy_flags_to_u8(flags);
+        info!("Setting role {} flags to 0x{:02x}", role_id.0, flags_u8);
+        self.bpf.update_role_flags(role_id.0, flags_u8)
+            .context("Failed to set role policy flags")?;
+        Ok(())
+    }
+
+    /// Add a network rule for a role
+    /// port: 0 = all ports
+    pub fn add_network_rule(&self, role_id: RoleId, port: u16, protocol: u8, direction: u8, allowed: bool) -> Result<()> {
+        self.bpf.add_network_rule(role_id.0, port, protocol, direction, allowed)
+            .context("Failed to add network rule")
+    }
+
+    /// Apply network rules from a Role definition
+    pub fn apply_network_rules(&self, role_id: RoleId, rules: &[NetworkRule]) -> Result<()> {
+        for rule in rules {
+            let protocol = match rule.protocol.to_lowercase().as_str() {
+                "tcp" => PROTO_TCP,
+                "udp" => PROTO_UDP,
+                other => {
+                    warn!("Unknown protocol '{}', skipping rule", other);
+                    continue;
+                }
+            };
+
+            let port = rule.port.unwrap_or(0);
+
+            // Apply rule for both bind and connect unless explicitly specified
+            // For now, we apply to both directions
+            self.add_network_rule(role_id, port, protocol, DIR_BIND, rule.allow)?;
+            self.add_network_rule(role_id, port, protocol, DIR_CONNECT, rule.allow)?;
+
+            info!(
+                "Applied network rule: role={} port={} proto={} allow={}",
+                role_id.0, port, rule.protocol, rule.allow
+            );
+        }
+        Ok(())
+    }
+}
