@@ -38,7 +38,7 @@
       "flags": {
         "allow_file_access": true,
         "allow_network": true,
-        "allow_exec": false,
+        "allow_exec": true,
         "require_signed_binary": false,
         "allow_setuid": false,
         "allow_ptrace": false
@@ -135,6 +135,26 @@
         {"protocol": "tcp", "port": 5432, "allow": true},
         {"protocol": "tcp", "port": 6379, "allow": true},
         {"protocol": "tcp", "port": 5672, "allow": true}
+      ],
+      "execution_rules": [],
+      "require_signed_binary": false
+    },
+    "webserver_test": {
+      "id": 8,
+      "name": "webserver_test",
+      "flags": {
+        "allow_file_access": true,
+        "allow_network": false,
+        "allow_exec": true,
+        "require_signed_binary": false,
+        "allow_setuid": false,
+        "allow_ptrace": false
+      },
+      "file_paths": [],
+      "network_rules": [
+        {"protocol": "tcp", "port": 80, "allow": true},
+        {"protocol": "tcp", "port": 443, "allow": true},
+        {"protocol": "tcp", "port": 8080, "allow": true}
       ],
       "execution_rules": [],
       "require_signed_binary": false

@@ -213,7 +213,7 @@ static __always_inline u16 bpf_ntohs(__be16 val)
 }
 
 // Check network access based on port/protocol rules
-// Returns: 0 = allow, -13 = deny
+// Returns: 1 = explicit allow, 0 = no rule (defer to role_flags), -13 = explicit deny
 static __always_inline int check_network_access(u32 role_id, struct socket *sock,
                                                   struct sockaddr *address, u8 direction)
 {
@@ -248,7 +248,7 @@ static __always_inline int check_network_access(u32 role_id, struct socket *sock
         bpf_probe_read_kernel(&be_port, sizeof(be_port), &addr6->sin6_port);
         port = bpf_ntohs(be_port);
     } else {
-        // Unknown address family, allow
+        // Unknown address family, no rule
         return 0;
     }
 
@@ -263,18 +263,18 @@ static __always_inline int check_network_access(u32 role_id, struct socket *sock
     u8 *rule = bpf_map_lookup_elem(&network_rules, &key);
     if (rule) {
         // Specific rule found
-        return *rule ? 0 : -13;  // 1 = allow, 0 = deny
+        return *rule ? 1 : -13;  // 1 = explicit allow, -13 = explicit deny
     }
 
     // Check wildcard port rule (port = 0 means all ports)
     key.port = 0;
     rule = bpf_map_lookup_elem(&network_rules, &key);
     if (rule) {
-        return *rule ? 0 : -13;
+        return *rule ? 1 : -13;
     }
 
     // No specific rule, fall back to role_flags
-    return 0;  // Will be checked by caller
+    return 0;
 }
 
 SEC("lsm/socket_bind")
@@ -293,23 +293,20 @@ int BPF_PROG(socket_bind, struct socket *sock, struct sockaddr *address, int add
         return -13;
     }
 
-    if (!(*flags & 0x02)) {
-        // Network blocked by role, but check for specific port allowlist
-        int result = check_network_access(info->role_id, sock, address, 0);
-        if (result == 0) {
-            // Check if there's an explicit allow rule
-            // If check_network_access returned 0 but role_flags blocks, deny
-            return -13;
-        }
-        return result;
-    }
-
-    // Network allowed by role, but check for specific port blocklist
     int result = check_network_access(info->role_id, sock, address, 0);
-    if (result != 0) {
-        return result;  // Port specifically blocked
+
+    if (!(*flags & 0x02)) {
+        // Network blocked by role - only allow if explicit allow rule (result=1)
+        if (result == 1) {
+            return 0;  // Explicit allow overrides role_flags
+        }
+        return -13;  // No rule or explicit deny -> block
     }
 
+    // Network allowed by role - only block if explicit deny rule (result=-13)
+    if (result == -13) {
+        return -13;  // Explicit deny overrides role_flags
+    }
     return 0;
 }
 
@@ -329,21 +326,20 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
         return -13;
     }
 
-    if (!(*flags & 0x02)) {
-        // Network blocked by role, but check for specific port allowlist
-        int result = check_network_access(info->role_id, sock, address, 1);
-        if (result == 0) {
-            return -13;  // No explicit allow, deny
-        }
-        return result;
-    }
-
-    // Network allowed by role, but check for specific port blocklist
     int result = check_network_access(info->role_id, sock, address, 1);
-    if (result != 0) {
-        return result;  // Port specifically blocked
+
+    if (!(*flags & 0x02)) {
+        // Network blocked by role - only allow if explicit allow rule (result=1)
+        if (result == 1) {
+            return 0;  // Explicit allow overrides role_flags
+        }
+        return -13;  // No rule or explicit deny -> block
     }
 
+    // Network allowed by role - only block if explicit deny rule (result=-13)
+    if (result == -13) {
+        return -13;  // Explicit deny overrides role_flags
+    }
     return 0;
 }
 
