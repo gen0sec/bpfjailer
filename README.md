@@ -24,6 +24,9 @@ BpfJailer is an eBPF-based process jailing system that provides mandatory access
 | Signed Binaries | 🚧 Stub | Binary signature validation (not implemented) |
 | Alternative Enrollment | 🚧 Stub | Cgroup/xattr enrollment (not implemented) |
 
+
+[![asciicast](https://asciinema.org/a/767420.svg)](https://asciinema.org/a/767420)
+
 ## Kernel Requirements
 
 ### Minimum Kernel Version
