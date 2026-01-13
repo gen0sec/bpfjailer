@@ -96,17 +96,44 @@ impl ProcessTracker {
                 }
             };
 
-            let port = rule.port.unwrap_or(0);
+            // Handle port range or single port
+            let ports: Vec<u16> = if let (Some(start), Some(end)) = (rule.port_start, rule.port_end) {
+                // Port range specified
+                if start > end {
+                    warn!("Invalid port range {}-{}, skipping", start, end);
+                    continue;
+                }
+                let range_size = (end - start + 1) as usize;
+                if range_size > 1000 {
+                    warn!("Port range {}-{} has {} ports (large ranges use many map entries)",
+                          start, end, range_size);
+                }
+                (start..=end).collect()
+            } else if let Some(port) = rule.port {
+                // Single port
+                vec![port]
+            } else {
+                // Wildcard (all ports)
+                vec![0]
+            };
 
-            // Apply rule for both bind and connect unless explicitly specified
-            // For now, we apply to both directions
-            self.add_network_rule(role_id, port, protocol, DIR_BIND, rule.allow)?;
-            self.add_network_rule(role_id, port, protocol, DIR_CONNECT, rule.allow)?;
+            for port in &ports {
+                self.add_network_rule(role_id, *port, protocol, DIR_BIND, rule.allow)?;
+                self.add_network_rule(role_id, *port, protocol, DIR_CONNECT, rule.allow)?;
+            }
 
-            info!(
-                "Applied network rule: role={} port={} proto={} allow={}",
-                role_id.0, port, rule.protocol, rule.allow
-            );
+            if ports.len() == 1 {
+                info!(
+                    "Applied network rule: role={} port={} proto={} allow={}",
+                    role_id.0, ports[0], rule.protocol, rule.allow
+                );
+            } else {
+                info!(
+                    "Applied network rule: role={} ports={}-{} ({} ports) proto={} allow={}",
+                    role_id.0, rule.port_start.unwrap(), rule.port_end.unwrap(),
+                    ports.len(), rule.protocol, rule.allow
+                );
+            }
         }
         Ok(())
     }

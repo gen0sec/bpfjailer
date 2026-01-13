@@ -12,7 +12,12 @@ pub struct PathPattern {
 pub struct NetworkRule {
     pub protocol: String,
     pub address: Option<String>,
+    /// Single port (e.g., 80)
     pub port: Option<u16>,
+    /// Port range start (e.g., 8000). Use with port_end.
+    pub port_start: Option<u16>,
+    /// Port range end (e.g., 8100). Use with port_start.
+    pub port_end: Option<u16>,
     pub allow: bool,
 }
 
