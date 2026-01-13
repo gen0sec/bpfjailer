@@ -1,0 +1,2 @@
+# BpfJailer Test Dependencies
+xattr>=0.10.0

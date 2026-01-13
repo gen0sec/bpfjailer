@@ -150,6 +150,28 @@ struct {
     __type(value, u8);
 } path_rules SEC(".maps");
 
+// Auto-enrollment by executable inode
+struct exec_enrollment_value {
+    u64 pod_id;
+    u32 role_id;
+    u32 _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);  // inode number of executable
+    __type(value, struct exec_enrollment_value);
+} exec_enrollment SEC(".maps");
+
+// Auto-enrollment by cgroup (cgroup id -> enrollment)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 1024);
+    __type(key, u64);  // cgroup id
+    __type(value, struct exec_enrollment_value);
+} cgroup_enrollment SEC(".maps");
+
 // Per-CPU buffer for collecting path components (bottom-up)
 #define MAX_COMPONENTS 16
 #define MAX_COMPONENT_LEN 64
@@ -571,12 +593,50 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
     // Check for pending enrollment and migrate to task_storage
     check_pending_enrollment(task, pid);
 
-    struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, 0);
-
-    if (!info || info->pod_id == 0) {
+    struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, BPF_LOCAL_STORAGE_GET_F_CREATE);
+    if (!info) {
         return 0;
     }
 
+    // If not enrolled, check for auto-enrollment by executable inode
+    if (info->pod_id == 0) {
+        // Get executable file's inode
+        struct file *exe_file = BPF_CORE_READ(bprm, file);
+        if (exe_file) {
+            struct inode *exe_inode = BPF_CORE_READ(exe_file, f_inode);
+            if (exe_inode) {
+                u64 ino = BPF_CORE_READ(exe_inode, i_ino);
+                struct exec_enrollment_value *enroll = bpf_map_lookup_elem(&exec_enrollment, &ino);
+                if (enroll) {
+                    // Auto-enroll based on executable
+                    info->pod_id = enroll->pod_id;
+                    info->role_id = enroll->role_id;
+                    info->stack_depth = 0;
+                    info->flags = 0;
+                }
+            }
+        }
+    }
+
+    // If still not enrolled, check for auto-enrollment by cgroup
+    if (info->pod_id == 0) {
+        u64 cgroup_id = bpf_get_current_cgroup_id();
+        struct exec_enrollment_value *enroll = bpf_map_lookup_elem(&cgroup_enrollment, &cgroup_id);
+        if (enroll) {
+            // Auto-enroll based on cgroup
+            info->pod_id = enroll->pod_id;
+            info->role_id = enroll->role_id;
+            info->stack_depth = 0;
+            info->flags = 0;
+        }
+    }
+
+    // If still not enrolled, allow execution
+    if (info->pod_id == 0) {
+        return 0;
+    }
+
+    // Check exec permission
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
         return -13;

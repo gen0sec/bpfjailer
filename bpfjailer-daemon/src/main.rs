@@ -61,6 +61,18 @@ async fn main() -> Result<()> {
     let _path_matcher = Arc::new(path_matcher::PathMatcher::new(bpf.clone())?);
     let _signed_binary = Arc::new(signed_binary::SignedBinaryManager::new(bpf.clone())?);
 
+    // Initialize alternative enrollment methods
+    let alt_enrollment = Arc::new(enrollment_alternatives::AlternativeEnrollment::new(
+        bpf.clone(),
+        process_tracker.clone(),
+        policy_manager.clone(),
+    ));
+
+    // Load auto-enrollment rules from policy
+    if let Err(e) = alt_enrollment.load_from_policy().await {
+        warn!("Failed to load auto-enrollment rules: {}", e);
+    }
+
     let enrollment_server = enrollment::EnrollmentServer::new(
         process_tracker.clone(),
         policy_manager.clone(),
