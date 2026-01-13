@@ -33,6 +33,7 @@ TESTS = [
     ("privilege_escalation", "Privilege Escalation"),
     ("path_access", "Path-based Access Control"),
     ("wildcard_access", "Wildcard Path Matching"),
+    ("auto_enrollment", "Auto-Enrollment Methods"),
 ]
 
 ROLES = {

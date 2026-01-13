@@ -205,5 +205,24 @@
       "require_signed_binary": false
     }
   },
-  "pods": []
+  "pods": [],
+  "exec_enrollments": [
+    {
+      "executable_path": "/usr/bin/nginx",
+      "pod_id": 1000,
+      "role": "webserver"
+    },
+    {
+      "executable_path": "/usr/bin/redis-server",
+      "pod_id": 1001,
+      "role": "database"
+    }
+  ],
+  "cgroup_enrollments": [
+    {
+      "cgroup_path": "/sys/fs/cgroup/bpfjailer/sandbox",
+      "pod_id": 2000,
+      "role": "sandbox"
+    }
+  ]
 }

@@ -5,8 +5,11 @@ This directory contains vulnerable Python applications that demonstrate common s
 ## Quick Start
 
 ```bash
+# Install test dependencies (optional, for xattr tests)
+pip3 install -r tests/requirements.txt
+
 # Start the BpfJailer daemon
-cd /root/bpfjail
+cd /root/bpfjailer
 sudo RUST_LOG=info ./target/release/bpfjailer-daemon &
 
 # Run all tests without jailing (shows vulnerabilities)
@@ -258,6 +261,46 @@ Directory allow (/tmp/allowed/): PASS
 Directory block (/tmp/blocked/): PASS
 Wildcard match (*/data.txt):     PASS
 Wildcard block (/secret/):       PASS
+```
+
+---
+
+### 10. Auto-Enrollment Methods (`auto_enrollment.py`)
+
+**Purpose**: Tests the alternative enrollment infrastructure for automatic process enrollment.
+
+**Methods Tested**:
+| Method | Description |
+|--------|-------------|
+| Executable | Auto-enroll by binary inode at exec time |
+| Cgroup | Auto-enroll by cgroup membership |
+| Xattr | Enrollment markers via extended attributes |
+
+```bash
+# Run auto-enrollment infrastructure test
+sudo python3 tests/vulnerable_apps/auto_enrollment.py
+
+# Test with daemon running
+sudo python3 tests/vulnerable_apps/run_tests.py --test auto_enrollment
+```
+
+**Expected Output**:
+```
+Executable enrollment infrastructure: PASS
+Cgroup enrollment infrastructure:     PASS
+Xattr enrollment markers:             PASS (or SKIP if xattr module missing)
+```
+
+**Policy Configuration for Auto-Enrollment**:
+```json
+{
+  "exec_enrollments": [
+    {"executable_path": "/usr/bin/nginx", "pod_id": 1000, "role": "webserver"}
+  ],
+  "cgroup_enrollments": [
+    {"cgroup_path": "/sys/fs/cgroup/myapp", "pod_id": 2000, "role": "sandbox"}
+  ]
+}
 ```
 
 ## Mitigation Summary Matrix

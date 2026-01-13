@@ -22,7 +22,7 @@ BpfJailer is an eBPF-based process jailing system that provides mandatory access
 | Exec Control | ✅ Working | Block/allow process execution |
 | Path Matching | ✅ Working | Dentry walking with cache invalidation |
 | Signed Binaries | 🚧 Stub | Binary signature validation (not implemented) |
-| Alternative Enrollment | 🚧 Stub | Cgroup/xattr enrollment (not implemented) |
+| Alternative Enrollment | ✅ Working | Auto-enroll by executable, cgroup, or xattr |
 
 ## Nginx demo
 ![Nginx demo](./tests/nginx/demo.gif)
@@ -416,6 +416,80 @@ ps aux | grep bpfjailer
 # Check socket permissions
 ls -la /run/bpfjailer/enrollment.sock
 ```
+
+## Alternative Enrollment Methods
+
+Beyond Unix socket enrollment, BpfJailer supports automatic enrollment based on:
+
+### Executable-based Enrollment
+
+Auto-enroll all processes executing a specific binary:
+
+```json
+{
+  "exec_enrollments": [
+    {
+      "executable_path": "/usr/bin/nginx",
+      "pod_id": 1000,
+      "role": "webserver"
+    }
+  ]
+}
+```
+
+When any process executes `/usr/bin/nginx`, it's automatically enrolled with the `webserver` role. This is matched by the executable's inode, so symlinks and hardlinks are handled correctly.
+
+### Cgroup-based Enrollment
+
+Auto-enroll all processes in a specific cgroup:
+
+```json
+{
+  "cgroup_enrollments": [
+    {
+      "cgroup_path": "/sys/fs/cgroup/bpfjailer/sandbox",
+      "pod_id": 2000,
+      "role": "sandbox"
+    }
+  ]
+}
+```
+
+Create the cgroup and move processes into it:
+
+```bash
+# Create cgroup
+sudo mkdir -p /sys/fs/cgroup/bpfjailer/sandbox
+
+# Move process to cgroup
+echo $$ | sudo tee /sys/fs/cgroup/bpfjailer/sandbox/cgroup.procs
+
+# Process is now auto-enrolled with sandbox role
+```
+
+### Xattr-based Enrollment
+
+Set extended attributes on executables for enrollment info:
+
+```bash
+# Set enrollment xattrs
+sudo setfattr -n user.bpfjailer.pod_id -v $(printf '\x01\x00\x00\x00\x00\x00\x00\x00') /path/to/binary
+sudo setfattr -n user.bpfjailer.role_id -v $(printf '\x03\x00\x00\x00') /path/to/binary
+
+# Check xattrs
+getfattr -d /path/to/binary
+```
+
+### How Auto-Enrollment Works
+
+1. **At exec time** (`bprm_check_security` LSM hook):
+   - Check if executable's inode is in `exec_enrollment` map
+   - Check if process's cgroup ID is in `cgroup_enrollment` map
+   - If found, automatically set `task_storage` with pod_id and role_id
+
+2. **Enrollment persists** through fork/exec via `task_alloc` hook
+
+3. **Policy rules** (network, path, exec) are applied based on role_id
 
 ## License
 

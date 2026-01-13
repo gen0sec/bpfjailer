@@ -46,10 +46,30 @@ pub struct Pod {
     pub stack_depth: u8,
 }
 
+/// Auto-enrollment rule for executables
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExecEnrollment {
+    pub executable_path: String,
+    pub pod_id: u64,
+    pub role: String,
+}
+
+/// Auto-enrollment rule for cgroups
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CgroupEnrollment {
+    pub cgroup_path: String,
+    pub pod_id: u64,
+    pub role: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PolicyConfig {
     pub roles: HashMap<String, Role>,
     pub pods: Vec<Pod>,
+    #[serde(default)]
+    pub exec_enrollments: Vec<ExecEnrollment>,
+    #[serde(default)]
+    pub cgroup_enrollments: Vec<CgroupEnrollment>,
 }
 
 impl PolicyConfig {
@@ -57,6 +77,8 @@ impl PolicyConfig {
         Self {
             roles: HashMap::new(),
             pods: Vec::new(),
+            exec_enrollments: Vec::new(),
+            cgroup_enrollments: Vec::new(),
         }
     }
 

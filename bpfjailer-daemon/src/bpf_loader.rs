@@ -104,6 +104,14 @@ impl BpfJailerBpf {
             log::info!("✓ inode_cache map available for caching");
         }
 
+        // Auto-enrollment maps
+        if object.map("exec_enrollment").is_some() {
+            log::info!("✓ exec_enrollment map available for executable-based enrollment");
+        }
+        if object.map("cgroup_enrollment").is_some() {
+            log::info!("✓ cgroup_enrollment map available for cgroup-based enrollment");
+        }
+
         // Note: task_storage map is automatically handled by libbpf-rs
         // It's created but we don't need to access it from userspace
         if object.map("task_storage").is_some() {
@@ -379,6 +387,87 @@ impl BpfJailerBpf {
         // The cache will naturally expire old entries
         log::debug!("Inode cache will be refreshed naturally (LRU)");
         Ok(())
+    }
+
+    /// Add auto-enrollment rule for an executable (by inode)
+    /// All processes executing this binary will be auto-enrolled
+    pub fn add_exec_enrollment(&self, inode: u64, pod_id: u64, role_id: u32) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("exec_enrollment")
+            .ok_or_else(|| anyhow::anyhow!("exec_enrollment map not found"))?;
+
+        let key = inode.to_ne_bytes();
+
+        // struct exec_enrollment_value { u64 pod_id; u32 role_id; u32 _pad; }
+        let mut value = [0u8; 16];
+        value[0..8].copy_from_slice(&pod_id.to_ne_bytes());
+        value[8..12].copy_from_slice(&role_id.to_ne_bytes());
+
+        map.update(&key, &value, MapFlags::empty())?;
+        log::info!("Exec enrollment: inode={} -> pod_id={}, role_id={}", inode, pod_id, role_id);
+        Ok(())
+    }
+
+    /// Remove auto-enrollment rule for an executable
+    #[allow(dead_code)]
+    pub fn remove_exec_enrollment(&self, inode: u64) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("exec_enrollment")
+            .ok_or_else(|| anyhow::anyhow!("exec_enrollment map not found"))?;
+
+        let key = inode.to_ne_bytes();
+        map.delete(&key)?;
+        log::info!("Removed exec enrollment for inode={}", inode);
+        Ok(())
+    }
+
+    /// Add auto-enrollment rule for a cgroup
+    /// All processes in this cgroup will be auto-enrolled
+    pub fn add_cgroup_enrollment(&self, cgroup_id: u64, pod_id: u64, role_id: u32) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("cgroup_enrollment")
+            .ok_or_else(|| anyhow::anyhow!("cgroup_enrollment map not found"))?;
+
+        let key = cgroup_id.to_ne_bytes();
+
+        // struct exec_enrollment_value { u64 pod_id; u32 role_id; u32 _pad; }
+        let mut value = [0u8; 16];
+        value[0..8].copy_from_slice(&pod_id.to_ne_bytes());
+        value[8..12].copy_from_slice(&role_id.to_ne_bytes());
+
+        map.update(&key, &value, MapFlags::empty())?;
+        log::info!("Cgroup enrollment: cgroup_id={} -> pod_id={}, role_id={}", cgroup_id, pod_id, role_id);
+        Ok(())
+    }
+
+    /// Remove auto-enrollment rule for a cgroup
+    #[allow(dead_code)]
+    pub fn remove_cgroup_enrollment(&self, cgroup_id: u64) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("cgroup_enrollment")
+            .ok_or_else(|| anyhow::anyhow!("cgroup_enrollment map not found"))?;
+
+        let key = cgroup_id.to_ne_bytes();
+        map.delete(&key)?;
+        log::info!("Removed cgroup enrollment for cgroup_id={}", cgroup_id);
+        Ok(())
+    }
+
+    /// Get inode of a file path
+    pub fn get_file_inode(path: &str) -> Result<u64> {
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(path)?;
+        Ok(metadata.ino())
+    }
+
+    /// Get cgroup ID from cgroup path
+    pub fn get_cgroup_id(cgroup_path: &str) -> Result<u64> {
+        // Read cgroup.id from the cgroup directory
+        // Or use statx with STATX_MNT_ID on the cgroup path
+        use std::os::unix::fs::MetadataExt;
+        let metadata = std::fs::metadata(cgroup_path)?;
+        // For cgroup2, the inode of the cgroup directory is the cgroup ID
+        Ok(metadata.ino())
     }
 }
 

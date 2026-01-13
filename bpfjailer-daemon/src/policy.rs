@@ -1,5 +1,5 @@
 use anyhow::Result;
-use bpfjailer_common::{PolicyConfig, PolicyFlags, Role, RoleId};
+use bpfjailer_common::{PolicyConfig, PolicyFlags, PodId, Role, RoleId};
 use log::info;
 use std::collections::HashMap;
 use std::path::Path;
@@ -92,5 +92,25 @@ impl PolicyManager {
 
     pub fn config(&self) -> &PolicyConfig {
         &self.config
+    }
+
+    /// Get executable enrollments from policy
+    pub fn get_exec_enrollments(&self) -> Vec<(String, PodId, RoleId)> {
+        self.config.exec_enrollments.iter()
+            .filter_map(|e| {
+                self.config.get_role(&e.role)
+                    .map(|r| (e.executable_path.clone(), PodId(e.pod_id), r.id))
+            })
+            .collect()
+    }
+
+    /// Get cgroup enrollments from policy
+    pub fn get_cgroup_enrollments(&self) -> Vec<(String, PodId, RoleId)> {
+        self.config.cgroup_enrollments.iter()
+            .filter_map(|e| {
+                self.config.get_role(&e.role)
+                    .map(|r| (e.cgroup_path.clone(), PodId(e.pod_id), r.id))
+            })
+            .collect()
     }
 }
