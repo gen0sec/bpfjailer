@@ -322,6 +322,26 @@ process_tracker.add_network_rule(RoleId(1), 443, PROTO_TCP, DIR_CONNECT, true)?;
 | `DIR_BIND` | 0 | socket bind() |
 | `DIR_CONNECT` | 1 | socket connect() |
 
+### Port Ranges
+
+Port ranges can be specified in policy.json using `port_start` and `port_end`:
+
+```json
+{
+  "network_rules": [
+    {"protocol": "tcp", "port": 443, "allow": true},
+    {"protocol": "tcp", "port_start": 8000, "port_end": 8100, "allow": true}
+  ]
+}
+```
+
+| Field | Description |
+|-------|-------------|
+| `port` | Single port (e.g., 80) |
+| `port_start` + `port_end` | Port range (e.g., 8000-8100) |
+
+> **Note**: Large ranges (>1000 ports) consume many BPF map entries. A warning is logged for ranges exceeding 1000 ports.
+
 ## Architecture
 
 ```

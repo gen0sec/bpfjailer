@@ -134,7 +134,8 @@
         {"protocol": "tcp", "port": 443, "allow": true},
         {"protocol": "tcp", "port": 5432, "allow": true},
         {"protocol": "tcp", "port": 6379, "allow": true},
-        {"protocol": "tcp", "port": 5672, "allow": true}
+        {"protocol": "tcp", "port": 5672, "allow": true},
+        {"protocol": "tcp", "port_start": 8000, "port_end": 8100, "allow": true}
       ],
       "execution_rules": [],
       "require_signed_binary": false
