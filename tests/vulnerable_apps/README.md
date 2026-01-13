@@ -26,6 +26,8 @@ sudo python3 tests/vulnerable_apps/run_tests.py --role 1
 | 3 | webserver | Allowed | Ports 80,443,8080 | Blocked | Web applications |
 | 4 | database | Allowed | Ports 5432,6379 | Blocked | Database servers |
 | 5 | isolated | Allowed | Blocked | Blocked | Sandboxed processing |
+| 9 | sandbox | Allowed | Blocked | Blocked | Sandboxed data processing |
+| 10 | wildcard_test | Path rules | Blocked | Blocked | Testing wildcard paths |
 
 ## Vulnerability Test Cases
 
@@ -195,17 +197,82 @@ sudo python3 tests/vulnerable_apps/privilege_escalation.py
 sudo python3 tests/vulnerable_apps/run_tests.py --role 1 --test privesc
 ```
 
+---
+
+### 8. Sandbox Role Test (`path_access.py`)
+
+**Purpose**: Tests the sandbox role which allows file access but blocks network and exec.
+
+**Use Case**: Sandboxed data processing tasks that need file I/O but no network or shell access.
+
+**Mitigated By**:
+| Role | File | Network | Exec |
+|------|------|---------|------|
+| sandbox | Allowed | Blocked | Blocked |
+| isolated | Allowed | Blocked | Blocked |
+| restricted | Blocked | Blocked | Blocked |
+
+```bash
+# Without jailing - all operations allowed
+sudo python3 tests/vulnerable_apps/path_access.py
+
+# With sandbox role - file allowed, network/exec blocked
+sudo python3 tests/vulnerable_apps/run_tests.py --role 9 --test path_access
+```
+
+**Expected Output with Sandbox Role**:
+```
+File access: ALLOWED
+Network:     BLOCKED
+Exec:        BLOCKED
+Sandbox role working correctly!
+```
+
+---
+
+### 9. Wildcard Path Matching (`wildcard_access.py`)
+
+**Purpose**: Tests BpfJailer's wildcard path matching capabilities for fine-grained file access control.
+
+**Tests**:
+- Directory wildcards: `/tmp/allowed/` allows all files under the directory
+- Single component wildcards: `/tmp/mixed/*/data.txt` matches any user's data.txt
+- Specific path blocking: `/tmp/blocked/` denies access to entire directory
+- Override rules: More specific rules override general wildcards
+
+**Wildcard Patterns**:
+| Pattern | Description |
+|---------|-------------|
+| `/path/to/dir/` | Allows all files under directory |
+| `/path/*/file.txt` | Matches single directory component |
+| `/path/to/file` | Matches exact file |
+
+```bash
+# Run wildcard test with dedicated role
+sudo python3 tests/vulnerable_apps/run_tests.py --role 10 --test wildcard_access
+```
+
+**Expected Output**:
+```
+Directory allow (/tmp/allowed/): PASS
+Directory block (/tmp/blocked/): PASS
+Wildcard match (*/data.txt):     PASS
+Wildcard block (/secret/):       PASS
+```
+
 ## Mitigation Summary Matrix
 
-| Vulnerability | restricted | webserver | isolated | permissive |
-|--------------|------------|-----------|----------|------------|
-| Path Traversal | BLOCKED | Partial | Partial | Allowed |
-| Command Injection | BLOCKED | BLOCKED | BLOCKED | Allowed |
-| Reverse Shell | BLOCKED | Partial | BLOCKED | Allowed |
-| SSRF | BLOCKED | Partial | BLOCKED | Allowed |
-| Arbitrary Write | BLOCKED | Partial | Partial | Allowed |
-| Crypto Miner | BLOCKED | BLOCKED | Partial | Allowed |
-| Privilege Escalation | BLOCKED | Partial | BLOCKED | Allowed |
+| Vulnerability | restricted | webserver | isolated | sandbox | wildcard_test | permissive |
+|--------------|------------|-----------|----------|---------|---------------|------------|
+| Path Traversal | BLOCKED | Partial | Partial | BLOCKED | Controlled | Allowed |
+| Command Injection | BLOCKED | BLOCKED | BLOCKED | BLOCKED | BLOCKED | Allowed |
+| Reverse Shell | BLOCKED | Partial | BLOCKED | BLOCKED | BLOCKED | Allowed |
+| SSRF | BLOCKED | Partial | BLOCKED | BLOCKED | BLOCKED | Allowed |
+| Arbitrary Write | BLOCKED | Partial | Partial | Partial | Controlled | Allowed |
+| Crypto Miner | BLOCKED | BLOCKED | Partial | BLOCKED | BLOCKED | Allowed |
+| Privilege Escalation | BLOCKED | Partial | BLOCKED | BLOCKED | BLOCKED | Allowed |
+| Path Access | BLOCKED | Partial | Partial | Controlled | Controlled | Allowed |
+| Wildcard Paths | BLOCKED | Partial | Partial | N/A | Controlled | Allowed |
 
 ## Role Selection Guide
 
@@ -228,6 +295,11 @@ sudo python3 tests/vulnerable_apps/run_tests.py --role 1 --test privesc
 - Running database services
 - Need specific port access (5432, 6379)
 - Don't need to spawn subprocesses
+
+### Use `sandbox` (ID 9) when:
+- Processing files without network access
+- Running data transformation tasks
+- Same as `isolated` - allows file, blocks network/exec
 
 ## Creating Custom Roles
 

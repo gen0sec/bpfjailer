@@ -31,6 +31,8 @@ TESTS = [
     ("arbitrary_write", "Arbitrary File Write"),
     ("crypto_miner", "Crypto Miner / Resource Abuse"),
     ("privilege_escalation", "Privilege Escalation"),
+    ("path_access", "Path-based Access Control"),
+    ("wildcard_access", "Wildcard Path Matching"),
 ]
 
 ROLES = {
@@ -42,6 +44,8 @@ ROLES = {
     5: ("isolated", "Allows file, blocks network and exec"),
     6: ("web_with_db", "Web + DB ports (80,443,5432,3306,6379), blocks exec"),
     7: ("worker", "Allows exec + limited network (443,5432,6379,5672)"),
+    9: ("sandbox", "Allows file, blocks network and exec (sandboxed processing)"),
+    10: ("wildcard_test", "Tests wildcard path matching rules"),
 }
 
 def enroll(pod_id: int, role_id: int) -> bool:

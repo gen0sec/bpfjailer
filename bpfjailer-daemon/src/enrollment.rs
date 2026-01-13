@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use bpfjailer_client::{EnrollmentRequest, EnrollmentResponse};
-use bpfjailer_common::RoleId;
 use log::{debug, error, info};
 use std::path::Path;
 use std::sync::Arc;
@@ -97,6 +96,11 @@ impl EnrollmentServer {
                             // Apply network rules from the role
                             if let Err(e) = process_tracker.apply_network_rules(role_id, &role.network_rules) {
                                 error!("Failed to apply network rules: {}", e);
+                            }
+
+                            // Apply path rules from the role
+                            if let Err(e) = process_tracker.apply_path_rules(role_id, &role.file_paths) {
+                                error!("Failed to apply path rules: {}", e);
                             }
 
                             match process_tracker.enroll_process(pid as u32, pod_id, role_id) {
