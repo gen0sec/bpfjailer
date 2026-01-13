@@ -158,6 +158,50 @@
       ],
       "execution_rules": [],
       "require_signed_binary": false
+    },
+    "sandbox": {
+      "id": 9,
+      "name": "sandbox",
+      "flags": {
+        "allow_file_access": true,
+        "allow_network": false,
+        "allow_exec": false,
+        "require_signed_binary": false,
+        "allow_setuid": false,
+        "allow_ptrace": false
+      },
+      "file_paths": [
+        {"pattern": "/tmp/", "allow": true},
+        {"pattern": "/usr/", "allow": true},
+        {"pattern": "/etc/passwd", "allow": false},
+        {"pattern": "/etc/shadow", "allow": false}
+      ],
+      "network_rules": [],
+      "execution_rules": [],
+      "require_signed_binary": false
+    },
+    "wildcard_test": {
+      "id": 10,
+      "name": "wildcard_test",
+      "flags": {
+        "allow_file_access": true,
+        "allow_network": false,
+        "allow_exec": false,
+        "require_signed_binary": false,
+        "allow_setuid": false,
+        "allow_ptrace": false
+      },
+      "file_paths": [
+        {"pattern": "/tmp/allowed/", "allow": true},
+        {"pattern": "/tmp/blocked/", "allow": false},
+        {"pattern": "/tmp/mixed/*/data.txt", "allow": true},
+        {"pattern": "/tmp/mixed/secret/", "allow": false},
+        {"pattern": "/var/log/", "allow": true},
+        {"pattern": "/var/log/secure", "allow": false}
+      ],
+      "network_rules": [],
+      "execution_rules": [],
+      "require_signed_binary": false
     }
   },
   "pods": []

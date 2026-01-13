@@ -88,6 +88,22 @@ impl BpfJailerBpf {
         }
         log::info!("✓ network_rules map available for port/protocol filtering");
 
+        if object.map("path_rules").is_none() {
+            return Err(anyhow::anyhow!("path_rules map not found"));
+        }
+        log::info!("✓ path_rules map available for path matching");
+
+        if object.map("path_states").is_none() {
+            return Err(anyhow::anyhow!("path_states map not found"));
+        }
+        log::info!("✓ path_states map available for dentry-based path matching");
+
+        if object.map("inode_cache").is_none() {
+            log::warn!("inode_cache map not found (optional)");
+        } else {
+            log::info!("✓ inode_cache map available for caching");
+        }
+
         // Note: task_storage map is automatically handled by libbpf-rs
         // It's created but we don't need to access it from userspace
         if object.map("task_storage").is_some() {
@@ -102,6 +118,9 @@ impl BpfJailerBpf {
             "socket_bind",
             "socket_connect",
             "bprm_check_security",
+            "path_rename",
+            "sb_mount",
+            "sb_umount",
         ];
 
         // LSM programs must be explicitly attached
@@ -223,4 +242,160 @@ impl BpfJailerBpf {
         map.delete(&key)?;
         Ok(())
     }
+
+    /// Add a path rule for a role
+    /// path: The path or prefix to match (e.g., "/var/www/", "/tmp/")
+    /// allowed: true = allow, false = deny
+    pub fn add_path_rule(&self, role_id: u32, path: &str, allowed: bool) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("path_rules")
+            .ok_or_else(|| anyhow::anyhow!("path_rules map not found"))?;
+
+        let path_hash = djb2_hash(path);
+
+        // struct path_rule_key { u32 role_id; u64 path_hash; }
+        let mut key = [0u8; 16];  // 4 + 4 padding + 8 = 16 bytes
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        // padding bytes 4-7 are zero
+        key[8..16].copy_from_slice(&path_hash.to_ne_bytes());
+
+        let value = [if allowed { 1u8 } else { 0u8 }];
+        map.update(&key, &value, MapFlags::empty())?;
+
+        let action = if allowed { "ALLOW" } else { "DENY" };
+        log::info!("Path rule: role={} path=\"{}\" (hash={:#x}) -> {}", role_id, path, path_hash, action);
+
+        Ok(())
+    }
+
+    /// Remove a path rule
+    #[allow(dead_code)]
+    pub fn remove_path_rule(&self, role_id: u32, path: &str) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("path_rules")
+            .ok_or_else(|| anyhow::anyhow!("path_rules map not found"))?;
+
+        let path_hash = djb2_hash(path);
+
+        let mut key = [0u8; 16];
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        key[8..16].copy_from_slice(&path_hash.to_ne_bytes());
+
+        map.delete(&key)?;
+        Ok(())
+    }
+
+    /// Add a path pattern to the state machine
+    /// Pattern examples: "/var/www/", "/tmp/*", "/etc/passwd"
+    /// Supports:
+    ///   - Exact paths: "/etc/passwd"
+    ///   - Directory prefixes: "/var/www/" (matches everything under /var/www/)
+    ///   - Wildcards: "/var/lib/*/data" (* matches any single component)
+    pub fn add_path_state(&self, role_id: u32, pattern: &str, allowed: bool) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("path_states")
+            .ok_or_else(|| anyhow::anyhow!("path_states map not found"))?;
+
+        // Parse path into components
+        let components: Vec<&str> = pattern
+            .split('/')
+            .filter(|s| !s.is_empty() && *s != "**")
+            .collect();
+
+        if components.is_empty() {
+            return Ok(());
+        }
+
+        let mut state: u32 = 0;  // Start from root state
+
+        for (i, component) in components.iter().enumerate() {
+            let is_last = i == components.len() - 1;
+            let is_wildcard = *component == "*";
+            let component_hash = if is_wildcard { 0 } else { djb2_hash_u32(component) };
+
+            // Create state transition
+            // struct path_state_key { u32 role_id; u32 state; u32 component_hash; }
+            let mut key = [0u8; 12];
+            key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+            key[4..8].copy_from_slice(&state.to_ne_bytes());
+            key[8..12].copy_from_slice(&component_hash.to_ne_bytes());
+
+            let next_state = if is_last {
+                if allowed { 0xFFFFFFFE } else { 0xFFFFFFFF }  // ACCEPT or REJECT
+            } else {
+                // Generate unique state ID based on path so far
+                djb2_hash_u32(&format!("{}:{}", role_id, &components[..=i].join("/")))
+            };
+
+            // struct path_state_value { u32 next_state; u8 is_terminal; u8 decision; u8 wildcard; u8 _pad; }
+            let mut value = [0u8; 8];
+            value[0..4].copy_from_slice(&next_state.to_ne_bytes());
+            value[4] = if is_last { 1 } else { 0 };  // is_terminal
+            value[5] = if allowed { 1 } else { 0 };  // decision
+            value[6] = if is_wildcard { 1 } else { 0 };  // wildcard
+            value[7] = 0;  // padding
+
+            map.update(&key, &value, MapFlags::empty())?;
+
+            state = next_state;
+        }
+
+        // If pattern ends with "/" (directory), add terminal state for any file under it
+        if pattern.ends_with('/') {
+            // Add wildcard transition for any component after this directory
+            let mut key = [0u8; 12];
+            key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+            key[4..8].copy_from_slice(&state.to_ne_bytes());
+            key[8..12].copy_from_slice(&0u32.to_ne_bytes());  // wildcard (0 = any)
+
+            let terminal_state: u32 = if allowed { 0xFFFFFFFE } else { 0xFFFFFFFF };
+            let mut value = [0u8; 8];
+            value[0..4].copy_from_slice(&terminal_state.to_ne_bytes());
+            value[4] = 1;  // is_terminal
+            value[5] = if allowed { 1 } else { 0 };
+            value[6] = 1;  // wildcard
+            value[7] = 0;
+
+            map.update(&key, &value, MapFlags::empty())?;
+        }
+
+        let action = if allowed { "ALLOW" } else { "DENY" };
+        log::info!("Path state: role={} pattern=\"{}\" -> {} ({} components)",
+                   role_id, pattern, action, components.len());
+
+        // Debug: show component hashes
+        for (i, comp) in components.iter().enumerate() {
+            let h = if *comp == "*" { 0 } else { djb2_hash_u32(comp) };
+            log::debug!("  Component {}: \"{}\" -> hash={:#x}", i, comp, h);
+        }
+
+        Ok(())
+    }
+
+    /// Clear inode cache (call after path rules change)
+    #[allow(dead_code)]
+    pub fn clear_inode_cache(&self) -> Result<()> {
+        // LRU_HASH doesn't support iteration/clearing easily
+        // The cache will naturally expire old entries
+        log::debug!("Inode cache will be refreshed naturally (LRU)");
+        Ok(())
+    }
+}
+
+/// djb2 hash function (64-bit) - must match the BPF implementation exactly
+fn djb2_hash(s: &str) -> u64 {
+    let mut hash: u64 = 5381;
+    for c in s.bytes().take(64) {
+        hash = hash.wrapping_mul(33).wrapping_add(c as u64);
+    }
+    hash
+}
+
+/// djb2 hash function (32-bit) - for path component hashing
+fn djb2_hash_u32(s: &str) -> u32 {
+    let mut hash: u32 = 5381;
+    for c in s.bytes().take(32) {
+        hash = hash.wrapping_mul(33).wrapping_add(c as u32);
+    }
+    hash
 }

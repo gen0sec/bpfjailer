@@ -20,7 +20,7 @@ BpfJailer is an eBPF-based process jailing system that provides mandatory access
 | Network Control | ✅ Working | Block/allow socket bind/connect |
 | Port/Protocol Filtering | ✅ Working | Per-port TCP/UDP allow/deny rules |
 | Exec Control | ✅ Working | Block/allow process execution |
-| Path Matching | 🚧 Stub | Pattern-based path filtering (not implemented) |
+| Path Matching | ✅ Working | Dentry walking with cache invalidation |
 | Signed Binaries | 🚧 Stub | Binary signature validation (not implemented) |
 | Alternative Enrollment | 🚧 Stub | Cgroup/xattr enrollment (not implemented) |
 

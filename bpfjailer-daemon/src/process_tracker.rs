@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bpfjailer_common::{NetworkRule, PodId, PolicyFlags, RoleId};
+use bpfjailer_common::{NetworkRule, PathPattern, PodId, PolicyFlags, RoleId};
 use log::{debug, info, warn};
 use std::sync::Arc;
 use crate::bpf_loader::BpfJailerBpf;
@@ -106,6 +106,43 @@ impl ProcessTracker {
             info!(
                 "Applied network rule: role={} port={} proto={} allow={}",
                 role_id.0, port, rule.protocol, rule.allow
+            );
+        }
+        Ok(())
+    }
+
+    /// Add a path rule for a role (legacy hash-based)
+    #[allow(dead_code)]
+    pub fn add_path_rule(&self, role_id: RoleId, path: &str, allowed: bool) -> Result<()> {
+        self.bpf.add_path_rule(role_id.0, path, allowed)
+            .context("Failed to add path rule")
+    }
+
+    /// Add a path state (dentry-walking state machine)
+    pub fn add_path_state(&self, role_id: RoleId, pattern: &str, allowed: bool) -> Result<()> {
+        self.bpf.add_path_state(role_id.0, pattern, allowed)
+            .context("Failed to add path state")
+    }
+
+    /// Apply path rules from a Role definition using state machine
+    pub fn apply_path_rules(&self, role_id: RoleId, rules: &[PathPattern]) -> Result<()> {
+        for rule in rules {
+            // Normalize path - ensure directory prefixes end with /
+            let path = if rule.pattern.ends_with("/**") {
+                // Convert glob pattern to prefix
+                rule.pattern.trim_end_matches("**").to_string()
+            } else if rule.pattern.ends_with("/*") {
+                rule.pattern.trim_end_matches('*').to_string()
+            } else {
+                rule.pattern.clone()
+            };
+
+            // Use state machine approach (dentry walking)
+            self.add_path_state(role_id, &path, rule.allow)?;
+
+            info!(
+                "Applied path rule: role={} path=\"{}\" allow={}",
+                role_id.0, path, rule.allow
             );
         }
         Ok(())

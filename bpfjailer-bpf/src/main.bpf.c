@@ -1,74 +1,14 @@
-// Define types before including headers
-typedef unsigned char __u8;
-typedef signed char __s8;
-typedef unsigned short __u16;
-typedef signed short __s16;
-typedef unsigned int __u32;
-typedef signed int __s32;
-typedef unsigned long long __u64;
-typedef long long __s64;
-typedef __u16 __be16;
-typedef __u32 __be32;
-typedef __u32 __wsum;
-typedef __u8 u8;
-typedef __u16 u16;
-typedef __u32 u32;
-typedef __u64 u64;
-typedef __s64 s64;
-
+// Use kernel BTF types from vmlinux.h
+#include "vmlinux.h"
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_tracing.h>
+#include <bpf/bpf_core_read.h>
 
-// BPF map type definitions
-#define BPF_MAP_TYPE_TASK_STORAGE 29
-#define BPF_MAP_TYPE_HASH 1
-#define BPF_F_NO_PREALLOC (1U << 0)
-#define BPF_LOCAL_STORAGE_GET_F_CREATE (1U << 0)
-
-// Helper macros - these should match libbpf conventions
-// Note: __uint creates an array declaration that libbpf parses
-#define __uint(name, val) int (*name)[val]
-#define __type(name, val) typeof(val) *name
-#define SEC(name) __attribute__((section(name), used))
-
-// Forward declarations
-struct task_struct {};
-struct file {};
-struct socket {
-    short type;  // SOCK_STREAM, SOCK_DGRAM, etc.
-};
-struct sockaddr {
-    unsigned short sa_family;
-};
-struct linux_binprm {};
-
-// Socket address structures
-struct sockaddr_in {
-    unsigned short sin_family;
-    __be16 sin_port;
-    __be32 sin_addr;
-    unsigned char __pad[8];
-};
-
-struct sockaddr_in6 {
-    unsigned short sin6_family;
-    __be16 sin6_port;
-    __be32 sin6_flowinfo;
-    __u8 sin6_addr[16];
-    __u32 sin6_scope_id;
-};
-
-// Address families
-#define AF_INET  2
-#define AF_INET6 10
-
-// Socket types
-#define SOCK_STREAM 1
-#define SOCK_DGRAM  2
-
-// Protocol constants
+// Protocol and socket constants
 #define PROTO_TCP 6
 #define PROTO_UDP 17
+#define AF_INET 2
+#define AF_INET6 10
 
 #define MAX_STACK_DEPTH 4
 #define MAX_PATH_LEN 4096
@@ -129,6 +69,226 @@ struct {
     __type(key, u32);    // PID
     __type(value, struct process_info);
 } pending_enrollments SEC(".maps");
+
+// =============================================================================
+// Path Matching State Machine
+// =============================================================================
+// Based on LPC 2025 presentation approach:
+// - Walk dentry tree from file to root
+// - Use state machine for pattern matching
+// - State transitions based on path component hash
+// - Supports wildcards and hierarchical patterns
+
+#define MAX_PATH_DEPTH 32       // Max directory depth to walk
+#define PATH_STATE_ROOT 0       // Starting state
+#define PATH_STATE_ACCEPT 0xFFFFFFFE  // Accept (allow)
+#define PATH_STATE_REJECT 0xFFFFFFFF  // Reject (deny)
+
+// State transition key: current_state + component_hash -> next_state
+struct path_state_key {
+    u32 role_id;
+    u32 state;           // Current state
+    u32 component_hash;  // Hash of path component (e.g., "var", "www")
+};
+
+// State transition value
+struct path_state_value {
+    u32 next_state;      // Next state after this component
+    u8 is_terminal;      // 1 if this is a final decision
+    u8 decision;         // If terminal: 1=allow, 0=deny
+    u8 wildcard;         // 1 if this matches any component (like *)
+    u8 _pad;
+};
+
+// Path state machine transitions
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 16384);
+    __type(key, struct path_state_key);
+    __type(value, struct path_state_value);
+} path_states SEC(".maps");
+
+// Inode cache: inode -> cached decision (for performance)
+struct inode_cache_key {
+    u32 role_id;
+    u64 inode;
+};
+
+struct inode_cache_value {
+    u8 decision;      // 1=allow, 0=deny
+    u8 _pad[3];
+    u32 generation;   // Cache generation for invalidation
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct inode_cache_key);
+    __type(value, struct inode_cache_value);
+} inode_cache SEC(".maps");
+
+// Global cache generation counter (incremented on mount changes)
+struct {
+    __uint(type, BPF_MAP_TYPE_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, u32);
+} cache_generation SEC(".maps");
+
+// Legacy path_rules map (kept for compatibility)
+#define PATH_RULE_MAX_LEN 256
+
+struct path_rule_key {
+    u32 role_id;
+    u64 path_hash;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 8192);
+    __type(key, struct path_rule_key);
+    __type(value, u8);
+} path_rules SEC(".maps");
+
+// Per-CPU buffer for collecting path components (bottom-up)
+#define MAX_COMPONENTS 16
+#define MAX_COMPONENT_LEN 64
+
+struct path_components {
+    u32 hashes[MAX_COMPONENTS];  // Hash of each component
+    u8 count;                     // Number of components collected
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERCPU_ARRAY);
+    __uint(max_entries, 1);
+    __type(key, u32);
+    __type(value, struct path_components);
+} path_buf SEC(".maps");
+
+// Simple hash for path component (djb2 variant)
+static __always_inline u32 hash_component(const unsigned char *name, u32 len)
+{
+    u32 hash = 5381;
+
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        if (i >= len)
+            break;
+        unsigned char c = 0;
+        bpf_probe_read_kernel(&c, 1, &name[i]);
+        if (c == 0)
+            break;
+        hash = ((hash << 5) + hash) + c;
+    }
+    return hash;
+}
+
+// Walk dentry tree and collect path component hashes (bottom-up)
+static __always_inline int collect_path_components(struct dentry *dentry, struct path_components *buf)
+{
+    struct dentry *current = dentry;
+    struct dentry *parent = NULL;
+    buf->count = 0;
+
+    #pragma unroll
+    for (int i = 0; i < MAX_COMPONENTS; i++) {
+        if (!current)
+            break;
+
+        // Bounds check for verifier
+        if (buf->count >= MAX_COMPONENTS)
+            break;
+
+        // Read parent pointer using CO-RE
+        parent = BPF_CORE_READ(current, d_parent);
+
+        // If parent == current, we've reached root
+        if (parent == current)
+            break;
+
+        // Read d_name using CO-RE
+        u32 len = BPF_CORE_READ(current, d_name.len);
+        const unsigned char *name = BPF_CORE_READ(current, d_name.name);
+
+        if (len > 0 && name) {
+            // Use local index for verifier
+            u8 idx = buf->count;
+            if (idx < MAX_COMPONENTS) {
+                buf->hashes[idx] = hash_component(name, len);
+                buf->count = idx + 1;
+            }
+        }
+
+        current = parent;
+    }
+
+    return buf->count;
+}
+
+// Run state machine on collected path components (reversed, root-to-leaf)
+static __always_inline int check_path_state_machine(u32 role_id, struct path_components *buf)
+{
+    if (buf->count == 0)
+        return 0;  // No rule
+
+    u32 state = PATH_STATE_ROOT;
+    struct path_state_key key = {
+        .role_id = role_id,
+        .state = 0,
+        .component_hash = 0,
+    };
+
+    u8 count = buf->count;
+    if (count > MAX_COMPONENTS)
+        count = MAX_COMPONENTS;
+
+    // Walk from root to leaf (reverse order since we collected bottom-up)
+    // hashes[count-1] is the topmost dir (closest to root)
+    // hashes[0] is the filename
+    #pragma unroll
+    for (int i = 0; i < MAX_COMPONENTS; i++) {
+        if (i >= count)
+            break;
+
+        // Index from end to start (root to file)
+        int idx = count - 1 - i;
+        if (idx < 0)
+            break;
+
+        key.state = state;
+        key.component_hash = buf->hashes[idx];
+
+        struct path_state_value *val = bpf_map_lookup_elem(&path_states, &key);
+
+        if (!val) {
+            // Try wildcard match (component_hash = 0 means match any)
+            key.component_hash = 0;
+            val = bpf_map_lookup_elem(&path_states, &key);
+        }
+
+        if (!val) {
+            // No transition, no rule
+            return 0;
+        }
+
+        if (val->is_terminal) {
+            return val->decision ? 1 : -13;
+        }
+
+        state = val->next_state;
+    }
+
+    // Reached end without terminal state - check if current state is accepting
+    key.state = state;
+    key.component_hash = 0;  // End-of-path marker
+    struct path_state_value *final = bpf_map_lookup_elem(&path_states, &key);
+    if (final && final->is_terminal) {
+        return final->decision ? 1 : -13;
+    }
+
+    return 0;  // No rule matched
+}
 
 // Helper to check and migrate pending enrollment to task_storage
 static __always_inline void check_pending_enrollment(struct task_struct *task, u32 pid)
@@ -199,8 +359,67 @@ int BPF_PROG(file_open, struct file *file)
         return -13;
     }
 
+    // Get dentry from file->f_path using CO-RE
+    struct dentry *dentry = BPF_CORE_READ(file, f_path.dentry);
+
+    if (dentry) {
+        // Get current cache generation
+        u32 zero = 0;
+        u32 *gen_ptr = bpf_map_lookup_elem(&cache_generation, &zero);
+        u32 current_gen = gen_ptr ? *gen_ptr : 0;
+
+        // Check inode cache first
+        struct inode *inode = BPF_CORE_READ(dentry, d_inode);
+
+        if (inode) {
+            struct inode_cache_key cache_key = {
+                .role_id = info->role_id,
+                .inode = (u64)inode,
+            };
+            struct inode_cache_value *cached = bpf_map_lookup_elem(&inode_cache, &cache_key);
+            if (cached && cached->generation == current_gen) {
+                // Cache hit with valid generation
+                if (cached->decision)
+                    return 0;  // Allow
+                return -13;    // Deny
+            }
+        }
+
+        // Get per-CPU path buffer
+        struct path_components *buf = bpf_map_lookup_elem(&path_buf, &zero);
+
+        if (buf) {
+            // Collect path components by walking dentry tree
+            collect_path_components(dentry, buf);
+
+            // Run state machine
+            int result = check_path_state_machine(info->role_id, buf);
+
+            if (result != 0) {
+                // Cache the decision with current generation
+                if (inode) {
+                    struct inode_cache_key cache_key = {
+                        .role_id = info->role_id,
+                        .inode = (u64)inode,
+                    };
+                    struct inode_cache_value val = {
+                        .decision = (result == 1) ? 1 : 0,
+                        .generation = current_gen,
+                    };
+                    bpf_map_update_elem(&inode_cache, &cache_key, &val, 0);
+                }
+
+                if (result == 1) {
+                    return 0;   // Explicit allow
+                }
+                return -13;     // Explicit deny
+            }
+        }
+    }
+
+    // No path rule matched - fall back to role_flags
     if (!(*flags & 0x01)) {
-        return -13;
+        return -13;  // File access blocked by role
     }
 
     return 0;
@@ -368,6 +587,56 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
     }
 
     return 0;
+}
+
+// Invalidate inode cache on rename - file path changed but inode stays same
+SEC("lsm/path_rename")
+int BPF_PROG(path_rename, const struct path *old_dir, struct dentry *old_dentry,
+             const struct path *new_dir, struct dentry *new_dentry)
+{
+    // Get the inode of the file being renamed
+    struct inode *inode = BPF_CORE_READ(old_dentry, d_inode);
+    if (!inode)
+        return 0;
+
+    // We can't easily iterate and delete all entries for this inode across all roles
+    // Instead, increment the global generation counter to invalidate all cached entries
+    // This is a simple but effective approach for handling renames
+    u32 zero = 0;
+    u32 *gen = bpf_map_lookup_elem(&cache_generation, &zero);
+    if (gen) {
+        __sync_fetch_and_add(gen, 1);
+    }
+
+    return 0;  // Always allow rename, just invalidate cache
+}
+
+// Invalidate entire cache on mount/unmount - paths may resolve differently
+SEC("lsm/sb_mount")
+int BPF_PROG(sb_mount, const char *dev_name, const struct path *path,
+             const char *type, unsigned long flags, void *data)
+{
+    // Increment generation to invalidate all cached path decisions
+    u32 zero = 0;
+    u32 *gen = bpf_map_lookup_elem(&cache_generation, &zero);
+    if (gen) {
+        __sync_fetch_and_add(gen, 1);
+    }
+
+    return 0;  // Always allow mount, just invalidate cache
+}
+
+SEC("lsm/sb_umount")
+int BPF_PROG(sb_umount, struct vfsmount *mnt, int flags)
+{
+    // Increment generation to invalidate all cached path decisions
+    u32 zero = 0;
+    u32 *gen = bpf_map_lookup_elem(&cache_generation, &zero);
+    if (gen) {
+        __sync_fetch_and_add(gen, 1);
+    }
+
+    return 0;  // Always allow umount, just invalidate cache
 }
 
 char LICENSE[] SEC("license") = "GPL";
