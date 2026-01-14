@@ -1,8 +1,6 @@
 use anyhow::{Context, Result};
 use bpfjailer_common::{PodId, RoleId};
 use serde::{Deserialize, Serialize};
-use std::os::unix::net::UnixStream;
-use std::path::Path;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::UnixStream as AsyncUnixStream;
 
@@ -15,6 +13,34 @@ pub enum EnrollmentRequest {
     Query {
         pid: u32,
     },
+    // Alternative enrollment management
+    EnrollExecutable {
+        executable_path: String,
+        pod_id: PodId,
+        role_id: RoleId,
+    },
+    RemoveExecutable {
+        executable_path: String,
+    },
+    EnrollCgroup {
+        cgroup_path: String,
+        pod_id: PodId,
+        role_id: RoleId,
+    },
+    RemoveCgroup {
+        cgroup_path: String,
+    },
+    SetXattr {
+        executable_path: String,
+        pod_id: PodId,
+        role_id: RoleId,
+    },
+    CheckXattr {
+        executable_path: String,
+    },
+    RemoveXattr {
+        executable_path: String,
+    },
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,6 +48,10 @@ pub enum EnrollmentResponse {
     Success,
     Error(String),
     ProcessInfo {
+        pod_id: PodId,
+        role_id: RoleId,
+    },
+    XattrInfo {
         pod_id: PodId,
         role_id: RoleId,
     },

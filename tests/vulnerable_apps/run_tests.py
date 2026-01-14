@@ -34,6 +34,7 @@ TESTS = [
     ("path_access", "Path-based Access Control"),
     ("wildcard_access", "Wildcard Path Matching"),
     ("auto_enrollment", "Auto-Enrollment Methods"),
+    ("tee_protection", "TEE Protection (ptrace, module, BPF blocking)"),
 ]
 
 ROLES = {
@@ -47,6 +48,7 @@ ROLES = {
     7: ("worker", "Allows exec + limited network (443,5432,6379,5672)"),
     9: ("sandbox", "Allows file, blocks network and exec (sandboxed processing)"),
     10: ("wildcard_test", "Tests wildcard path matching rules"),
+    11: ("tee_protected", "TEE: blocks ptrace, module load, BPF operations"),
 }
 
 def enroll(pod_id: int, role_id: int) -> bool:

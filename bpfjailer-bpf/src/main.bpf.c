@@ -672,6 +672,9 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
         return 0;
     }
 
+    // Track if this process was already enrolled before this exec
+    u8 was_enrolled = (info->pod_id != 0);
+
     // If not enrolled, check for auto-enrollment by executable inode
     if (info->pod_id == 0) {
         // Get executable file's inode
@@ -687,6 +690,8 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
                     info->role_id = enroll->role_id;
                     info->stack_depth = 0;
                     info->flags = 0;
+                    // This is the initial enrollment, allow the exec
+                    return 0;
                 }
             }
         }
@@ -702,6 +707,8 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
             info->role_id = enroll->role_id;
             info->stack_depth = 0;
             info->flags = 0;
+            // This is the initial enrollment, allow the exec
+            return 0;
         }
     }
 
@@ -710,7 +717,7 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
         return 0;
     }
 
-    // Check exec permission
+    // Process was already enrolled - check exec permission for spawning child
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
         emit_audit_event(ctx, pid, info->role_id, info->pod_id,
@@ -718,7 +725,8 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
         return -13;
     }
 
-    if (!(*flags & 0x04)) {
+    // Only check allow_exec for CHILD processes (when already enrolled)
+    if (was_enrolled && !(*flags & 0x04)) {
         emit_audit_event(ctx, pid, info->role_id, info->pod_id,
                          AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
         return -13;
@@ -775,6 +783,97 @@ int BPF_PROG(sb_umount, struct vfsmount *mnt, int flags)
     }
 
     return 0;  // Always allow umount, just invalidate cache
+}
+
+// Block ptrace/debugging of enrolled processes
+// Flag: 0x20 = allow_ptrace
+SEC("lsm/ptrace_access_check")
+int BPF_PROG(ptrace_access_check, struct task_struct *child, unsigned int mode)
+{
+    // Check if the TARGET (child) is enrolled and protected
+    struct process_info *child_info = bpf_task_storage_get(&task_storage, child, NULL, 0);
+
+    if (!child_info || child_info->pod_id == 0) {
+        return 0;  // Target not enrolled, allow ptrace
+    }
+
+    // Target is enrolled - check if its role allows being ptraced
+    u8 *flags = bpf_map_lookup_elem(&role_flags, &child_info->role_id);
+    if (!flags) {
+        return -1;  // No flags found, deny ptrace
+    }
+
+    if (!(*flags & 0x20)) {
+        // allow_ptrace = false, block debugging
+        u32 pid = bpf_get_current_pid_tgid() >> 32;
+        emit_audit_event(ctx, pid, child_info->role_id, child_info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
+        return -1;
+    }
+
+    return 0;
+}
+
+// Block kernel module loading by enrolled processes
+// Flag: 0x40 = allow_module_load
+SEC("lsm/kernel_module_request")
+int BPF_PROG(kernel_module_request, char *kmod_name)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, 0);
+
+    if (!info || info->pod_id == 0) {
+        return 0;  // Not enrolled, allow module load
+    }
+
+    u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
+    if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
+        return -1;
+    }
+
+    if (!(*flags & 0x40)) {
+        // allow_module_load = false, block module loading
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
+        return -1;
+    }
+
+    return 0;
+}
+
+// Block BPF program loading by enrolled processes
+// Flag: 0x80 = allow_bpf_load
+SEC("lsm/bpf")
+int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size)
+{
+    struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
+
+    struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, 0);
+
+    if (!info || info->pod_id == 0) {
+        return 0;  // Not enrolled, allow BPF operations
+    }
+
+    u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
+    if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
+        return -1;
+    }
+
+    if (!(*flags & 0x80)) {
+        // allow_bpf_load = false, block BPF operations
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
+        return -1;
+    }
+
+    return 0;
 }
 
 char LICENSE[] SEC("license") = "GPL";

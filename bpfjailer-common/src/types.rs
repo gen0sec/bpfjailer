@@ -22,6 +22,10 @@ pub struct PolicyFlags {
     pub require_signed_binary: bool,
     pub allow_setuid: bool,
     pub allow_ptrace: bool,
+    #[serde(default)]
+    pub allow_module_load: bool,
+    #[serde(default)]
+    pub allow_bpf_load: bool,
 }
 
 impl Default for PolicyFlags {
@@ -33,6 +37,8 @@ impl Default for PolicyFlags {
             require_signed_binary: false,
             allow_setuid: false,
             allow_ptrace: false,
+            allow_module_load: false,
+            allow_bpf_load: false,
         }
     }
 }

@@ -380,12 +380,25 @@ impl BpfJailerBpf {
         Ok(())
     }
 
-    /// Clear inode cache (call after path rules change)
-    #[allow(dead_code)]
-    pub fn clear_inode_cache(&self) -> Result<()> {
-        // LRU_HASH doesn't support iteration/clearing easily
-        // The cache will naturally expire old entries
-        log::debug!("Inode cache will be refreshed naturally (LRU)");
+    /// Increment cache generation counter to invalidate inode cache
+    pub fn invalidate_cache(&self) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("cache_generation")
+            .ok_or_else(|| anyhow::anyhow!("cache_generation map not found"))?;
+
+        // Read current generation
+        let key = 0u32.to_ne_bytes();
+        let current_gen = map.lookup(&key, MapFlags::empty())?
+            .ok_or_else(|| anyhow::anyhow!("cache_generation map entry not found"))?;
+
+        // Increment it (wrapping is fine)
+        let current: u32 = u32::from_ne_bytes([
+            current_gen[0], current_gen[1], current_gen[2], current_gen[3]
+        ]);
+        let new_gen = current.wrapping_add(1);
+
+        map.update(&key, &new_gen.to_ne_bytes(), MapFlags::empty())?;
+        log::info!("Invalidated inode cache (generation: {} -> {})", current, new_gen);
         Ok(())
     }
 

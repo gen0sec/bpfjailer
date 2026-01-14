@@ -170,7 +170,7 @@
         "require_signed_binary": false,
         "allow_setuid": false,
         "allow_ptrace": false
-      },
+  },
       "file_paths": [
         {"pattern": "/tmp/", "allow": true},
         {"pattern": "/usr/", "allow": true},
@@ -199,6 +199,27 @@
         {"pattern": "/tmp/mixed/secret/", "allow": false},
         {"pattern": "/var/log/", "allow": true},
         {"pattern": "/var/log/secure", "allow": false}
+      ],
+      "network_rules": [],
+      "execution_rules": [],
+      "require_signed_binary": false
+    },
+    "tee_protected": {
+      "id": 11,
+      "name": "tee_protected",
+      "flags": {
+        "allow_file_access": true,
+        "allow_network": true,
+        "allow_exec": true,
+        "require_signed_binary": false,
+        "allow_setuid": false,
+        "allow_ptrace": false,
+        "allow_module_load": false,
+        "allow_bpf_load": false
+      },
+      "file_paths": [
+        {"pattern": "/proc/", "allow": false},
+        {"pattern": "/sys/kernel/", "allow": false}
       ],
       "network_rules": [],
       "execution_rules": [],

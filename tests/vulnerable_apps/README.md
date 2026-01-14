@@ -31,6 +31,7 @@ sudo python3 tests/vulnerable_apps/run_tests.py --role 1
 | 5 | isolated | Allowed | Blocked | Blocked | Sandboxed processing |
 | 9 | sandbox | Allowed | Blocked | Blocked | Sandboxed data processing |
 | 10 | wildcard_test | Path rules | Blocked | Blocked | Testing wildcard paths |
+| 11 | tee_protected | Allowed | Allowed | Allowed | TEE: blocks ptrace/modules/BPF |
 
 ## Vulnerability Test Cases
 
@@ -302,6 +303,61 @@ Xattr enrollment markers:             PASS (or SKIP if xattr module missing)
   ]
 }
 ```
+
+---
+
+### 11. TEE Protection (`tee_protection.py`)
+
+**Purpose**: Tests security restrictions for Trusted Execution Environment (TEE) scenarios.
+
+**Protections Tested**:
+| Protection | Flag | Description |
+|------------|------|-------------|
+| Ptrace Blocking | `allow_ptrace: false` | Prevents debugging/memory inspection |
+| Module Loading | `allow_module_load: false` | Prevents kernel module loading |
+| BPF Operations | `allow_bpf_load: false` | Prevents BPF program loading |
+
+```bash
+# Run TEE protection tests
+sudo python3 tests/vulnerable_apps/tee_protection.py
+
+# Test with tee_protected role (ID 11)
+sudo python3 tests/vulnerable_apps/run_tests.py --role 11 --test tee_protection
+```
+
+**Expected Output (when enrolled with tee_protected role)**:
+```
+ptrace_self:   BLOCKED
+ptrace_child:  BLOCKED
+strace:        BLOCKED
+module_load:   BLOCKED
+insmod:        BLOCKED
+bpf_syscall:   BLOCKED
+bpftool:       BLOCKED
+```
+
+**Policy Configuration for TEE Protection**:
+```json
+{
+  "tee_protected": {
+    "id": 11,
+    "flags": {
+      "allow_file_access": true,
+      "allow_network": true,
+      "allow_exec": true,
+      "allow_ptrace": false,
+      "allow_module_load": false,
+      "allow_bpf_load": false
+    },
+    "file_paths": [
+      {"pattern": "/proc/", "allow": false},
+      {"pattern": "/sys/kernel/", "allow": false}
+    ]
+  }
+}
+```
+
+---
 
 ## Mitigation Summary Matrix
 

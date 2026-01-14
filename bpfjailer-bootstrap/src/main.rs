@@ -122,6 +122,9 @@ fn load_bpf_object() -> Result<(Object, Vec<Link>)> {
         "path_rename",
         "sb_mount",
         "sb_umount",
+        "ptrace_access_check",
+        "kernel_module_request",
+        "bpf",
     ];
 
     let mut links = Vec::new();
@@ -397,6 +400,9 @@ fn pin_all(object: &mut Object, links: &mut [Link]) -> Result<()> {
         "path_rename",
         "sb_mount",
         "sb_umount",
+        "ptrace_access_check",
+        "kernel_module_request",
+        "bpf",
     ];
 
     for name in &prog_names {
@@ -451,6 +457,12 @@ fn flags_to_byte(flags: &bpfjailer_common::types::PolicyFlags) -> u8 {
     }
     if flags.allow_ptrace {
         byte |= 0x20;
+    }
+    if flags.allow_module_load {
+        byte |= 0x40;
+    }
+    if flags.allow_bpf_load {
+        byte |= 0x80;
     }
     byte
 }
