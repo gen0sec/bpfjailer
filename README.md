@@ -1,12 +1,16 @@
-# BpfJailer - eBPF Mandatory Access Control
+# Jailer - eBPF Mandatory Access Control
 
 > **Warning**: This project is under heavy development and is **NOT ready for production use**. APIs, policy formats, and behavior may change without notice. Use for testing and experimentation only.
+
+## Acknowledgments
+
+> **Note**: This is an independent implementation and is not the same project as Meta's solution. While BpfJailer is functionally similar and inspired by the original idea and design by **Liam Wisehart**,  **Justin Nga**, **Carl El Khoury**, **Mansee Chadha**  at **Meta**, this is a separate codebase developed independently. We extend our gratitude for the vision and foundational concepts that inspired this work.
 
 # Community
 [![Join us on Discord](https://img.shields.io/badge/Join%20Us%20on-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/jzsW5Q6s9q)
 [![Substack](https://img.shields.io/badge/Substack-FF6719?logo=substack&logoColor=fff)](https://arxignis.substack.com/)
 
-BpfJailer is an eBPF-based process jailing system that provides mandatory access control (MAC) for Linux. It tracks processes using BPF task_storage maps and enforces role-based policies on file access, network operations, and process execution.
+Jailer is an eBPF-based process jailing system that provides mandatory access control (MAC) for Linux. It tracks processes using BPF task_storage maps and enforces role-based policies on file access, network operations, and process execution.
 
 ## Features (Current Version)
 
@@ -572,7 +576,3 @@ getfattr -d /path/to/binary
 ## License
 
 GPL-2.0 (required for BPF programs)
-
-## Acknowledgments
-
-This project is based on the original idea and design by **Liam Wisehart** at **Meta**. Special thanks for the vision and foundational work that made BpfJailer possible.
