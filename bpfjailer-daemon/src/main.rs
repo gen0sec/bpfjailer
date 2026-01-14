@@ -58,8 +58,27 @@ async fn main() -> Result<()> {
 
     let policy_manager = Arc::new(RwLock::new(policy_manager));
     let process_tracker = Arc::new(process_tracker::ProcessTracker::new(bpf.clone())?);
-    let _path_matcher = Arc::new(path_matcher::PathMatcher::new(bpf.clone())?);
+    let path_matcher = Arc::new(path_matcher::PathMatcher::new(bpf.clone())?);
     let _signed_binary = Arc::new(signed_binary::SignedBinaryManager::new(bpf.clone())?);
+
+    // Compile path patterns from loaded policy and invalidate cache
+    {
+        let pm = policy_manager.read().await;
+        let all_patterns: Vec<String> = pm.config().roles.values()
+            .flat_map(|role| role.file_paths.iter().map(|p| p.pattern.clone()))
+            .collect();
+        drop(pm);
+
+        if !all_patterns.is_empty() {
+            if let Err(e) = path_matcher.compile_patterns(&all_patterns) {
+                warn!("Failed to compile path patterns: {}", e);
+            }
+            // Invalidate cache since path rules may have changed
+            if let Err(e) = path_matcher.invalidate_cache() {
+                warn!("Failed to invalidate cache: {}", e);
+            }
+        }
+    }
 
     // Initialize alternative enrollment methods
     let alt_enrollment = Arc::new(enrollment_alternatives::AlternativeEnrollment::new(
@@ -76,6 +95,7 @@ async fn main() -> Result<()> {
     let enrollment_server = enrollment::EnrollmentServer::new(
         process_tracker.clone(),
         policy_manager.clone(),
+        alt_enrollment.clone(),
     );
 
     let server_handle = tokio::spawn(async move {

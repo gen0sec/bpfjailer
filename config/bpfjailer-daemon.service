@@ -1,6 +1,6 @@
 [Unit]
 Description=BpfJailer Daemon (Standard Mode)
-Documentation=https://github.com/your-org/bpfjailer
+Documentation=https://github.com/gen0sec/jailer
 After=network.target
 
 [Service]

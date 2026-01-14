@@ -28,6 +28,8 @@ impl PolicyManager {
                 require_signed_binary: false,
                 allow_setuid: false,
                 allow_ptrace: false,
+                allow_module_load: false,
+                allow_bpf_load: false,
             },
             file_paths: vec![],
             network_rules: vec![],
@@ -46,6 +48,8 @@ impl PolicyManager {
                 require_signed_binary: false,
                 allow_setuid: false,
                 allow_ptrace: false,
+                allow_module_load: true,
+                allow_bpf_load: true,
             },
             file_paths: vec![],
             network_rules: vec![],
@@ -84,6 +88,7 @@ impl PolicyManager {
         self.role_map.get(&role_id)
     }
 
+    #[allow(dead_code)]
     pub fn get_role_by_name(&self, name: &str) -> Option<&Arc<Role>> {
         self.config.get_role(name).map(|r| {
             self.role_map.get(&r.id).unwrap()

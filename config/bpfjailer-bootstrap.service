@@ -1,6 +1,6 @@
 [Unit]
 Description=BpfJailer Bootstrap (Daemonless Mode)
-Documentation=https://github.com/gen0sec/bpfjailer
+Documentation=https://github.com/gen0sec/jailer
 DefaultDependencies=no
 Before=basic.target
 After=local-fs.target
