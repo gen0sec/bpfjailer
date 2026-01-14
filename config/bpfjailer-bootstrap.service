@@ -1,0 +1,25 @@
+[Unit]
+Description=BpfJailer Bootstrap (Daemonless Mode)
+Documentation=https://github.com/gen0sec/bpfjailer
+DefaultDependencies=no
+Before=basic.target
+After=local-fs.target
+ConditionPathExists=/etc/bpfjailer/policy.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/bpfjailer-bootstrap
+RemainAfterExit=yes
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/
+ReadWritePaths=/sys/fs/bpf
+
+[Install]
+WantedBy=sysinit.target

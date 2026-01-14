@@ -172,6 +172,57 @@ struct {
     __type(value, struct exec_enrollment_value);
 } cgroup_enrollment SEC(".maps");
 
+// =============================================================================
+// Audit Events (Perf Buffer for systemd-journald integration)
+// =============================================================================
+// Used in daemonless mode - events are picked up by journald or logging daemon
+
+// Hook types for audit events
+#define AUDIT_HOOK_FILE_OPEN      1
+#define AUDIT_HOOK_SOCKET_BIND    2
+#define AUDIT_HOOK_SOCKET_CONNECT 3
+#define AUDIT_HOOK_BPRM_CHECK     4
+#define AUDIT_HOOK_PATH_RENAME    5
+
+// Decision types
+#define AUDIT_DECISION_DENY  0
+#define AUDIT_DECISION_ALLOW 1
+
+struct audit_event {
+    u64 timestamp;       // ktime_get_ns()
+    u32 pid;             // Process ID
+    u32 role_id;         // Role of the process
+    u32 decision;        // AUDIT_DECISION_DENY or AUDIT_DECISION_ALLOW
+    u32 hook_type;       // AUDIT_HOOK_* value
+    u64 context;         // Hook-specific: inode, port, etc.
+    u64 pod_id;          // Pod ID
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_PERF_EVENT_ARRAY);
+    __uint(key_size, sizeof(u32));
+    __uint(value_size, sizeof(u32));
+} audit_events SEC(".maps");
+
+// Helper to emit audit event
+static __always_inline void emit_audit_event(void *ctx, u32 pid, u32 role_id,
+                                              u64 pod_id, u32 decision,
+                                              u32 hook_type, u64 context)
+{
+    struct audit_event event = {
+        .timestamp = bpf_ktime_get_ns(),
+        .pid = pid,
+        .role_id = role_id,
+        .pod_id = pod_id,
+        .decision = decision,
+        .hook_type = hook_type,
+        .context = context,
+    };
+
+    bpf_perf_event_output(ctx, &audit_events, BPF_F_CURRENT_CPU,
+                          &event, sizeof(event));
+}
+
 // Per-CPU buffer for collecting path components (bottom-up)
 #define MAX_COMPONENTS 16
 #define MAX_COMPONENT_LEN 64
@@ -378,6 +429,8 @@ int BPF_PROG(file_open, struct file *file)
 
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_FILE_OPEN, 0);
         return -13;
     }
 
@@ -403,6 +456,8 @@ int BPF_PROG(file_open, struct file *file)
                 // Cache hit with valid generation
                 if (cached->decision)
                     return 0;  // Allow
+                emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                                 AUDIT_DECISION_DENY, AUDIT_HOOK_FILE_OPEN, cache_key.inode);
                 return -13;    // Deny
             }
         }
@@ -434,6 +489,9 @@ int BPF_PROG(file_open, struct file *file)
                 if (result == 1) {
                     return 0;   // Explicit allow
                 }
+                emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                                 AUDIT_DECISION_DENY, AUDIT_HOOK_FILE_OPEN,
+                                 inode ? (u64)inode : 0);
                 return -13;     // Explicit deny
             }
         }
@@ -441,6 +499,8 @@ int BPF_PROG(file_open, struct file *file)
 
     // No path rule matched - fall back to role_flags
     if (!(*flags & 0x01)) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_FILE_OPEN, 0);
         return -13;  // File access blocked by role
     }
 
@@ -522,6 +582,7 @@ SEC("lsm/socket_bind")
 int BPF_PROG(socket_bind, struct socket *sock, struct sockaddr *address, int addrlen)
 {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, 0);
 
     if (!info || info->pod_id == 0) {
@@ -531,6 +592,8 @@ int BPF_PROG(socket_bind, struct socket *sock, struct sockaddr *address, int add
     // Check role_flags first (bit 1 = network allowed)
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_BIND, 0);
         return -13;
     }
 
@@ -541,11 +604,15 @@ int BPF_PROG(socket_bind, struct socket *sock, struct sockaddr *address, int add
         if (result == 1) {
             return 0;  // Explicit allow overrides role_flags
         }
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_BIND, 0);
         return -13;  // No rule or explicit deny -> block
     }
 
     // Network allowed by role - only block if explicit deny rule (result=-13)
     if (result == -13) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_BIND, 0);
         return -13;  // Explicit deny overrides role_flags
     }
     return 0;
@@ -555,6 +622,7 @@ SEC("lsm/socket_connect")
 int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int addrlen)
 {
     struct task_struct *task = (struct task_struct *)bpf_get_current_task_btf();
+    u32 pid = bpf_get_current_pid_tgid() >> 32;
     struct process_info *info = bpf_task_storage_get(&task_storage, task, NULL, 0);
 
     if (!info || info->pod_id == 0) {
@@ -564,6 +632,8 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
     // Check role_flags first (bit 1 = network allowed)
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, 0);
         return -13;
     }
 
@@ -574,11 +644,15 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
         if (result == 1) {
             return 0;  // Explicit allow overrides role_flags
         }
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, 0);
         return -13;  // No rule or explicit deny -> block
     }
 
     // Network allowed by role - only block if explicit deny rule (result=-13)
     if (result == -13) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, 0);
         return -13;  // Explicit deny overrides role_flags
     }
     return 0;
@@ -639,10 +713,14 @@ int BPF_PROG(bprm_check_security, struct linux_binprm *bprm)
     // Check exec permission
     u8 *flags = bpf_map_lookup_elem(&role_flags, &info->role_id);
     if (!flags) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
         return -13;
     }
 
     if (!(*flags & 0x04)) {
+        emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_BPRM_CHECK, 0);
         return -13;
     }
 

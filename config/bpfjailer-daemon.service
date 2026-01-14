@@ -1,0 +1,23 @@
+[Unit]
+Description=BpfJailer Daemon (Standard Mode)
+Documentation=https://github.com/your-org/bpfjailer
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/sbin/bpfjailer-daemon
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+# Security hardening
+NoNewPrivileges=no
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ReadOnlyPaths=/
+ReadWritePaths=/sys/fs/bpf /run/bpfjailer
+
+[Install]
+WantedBy=multi-user.target

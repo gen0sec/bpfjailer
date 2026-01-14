@@ -1,12 +1,16 @@
-# BpfJailer - eBPF Mandatory Access Control
+# Jailer - eBPF Mandatory Access Control
 
 > **Warning**: This project is under heavy development and is **NOT ready for production use**. APIs, policy formats, and behavior may change without notice. Use for testing and experimentation only.
+
+## Acknowledgments
+
+> **Note**: This is an independent implementation and is not the same project as Meta's solution. While BpfJailer is functionally similar and inspired by the original idea and design by **Liam Wisehart**,  **Justin Nga**, **Carl El Khoury**, **Mansee Chadha**  at **Meta**, this is a separate codebase developed independently. We extend our gratitude for the vision and foundational concepts that inspired this work.
 
 # Community
 [![Join us on Discord](https://img.shields.io/badge/Join%20Us%20on-Discord-5865F2?logo=discord&logoColor=white)](https://discord.gg/jzsW5Q6s9q)
 [![Substack](https://img.shields.io/badge/Substack-FF6719?logo=substack&logoColor=fff)](https://arxignis.substack.com/)
 
-BpfJailer is an eBPF-based process jailing system that provides mandatory access control (MAC) for Linux. It tracks processes using BPF task_storage maps and enforces role-based policies on file access, network operations, and process execution.
+Jailer is an eBPF-based process jailing system that provides mandatory access control (MAC) for Linux. It tracks processes using BPF task_storage maps and enforces role-based policies on file access, network operations, and process execution.
 
 ## Features (Current Version)
 
@@ -23,6 +27,8 @@ BpfJailer is an eBPF-based process jailing system that provides mandatory access
 | Path Matching | ✅ Working | Dentry walking with cache invalidation |
 | Signed Binaries | 🚧 Stub | Binary signature validation (not implemented) |
 | Alternative Enrollment | ✅ Working | Auto-enroll by executable, cgroup, or xattr |
+| Daemonless Mode | ✅ Working | Bootstrap binary pins programs at early boot |
+| Audit Events | ✅ Working | Perf buffer for systemd-journald integration |
 
 ## Nginx demo
 ![Nginx demo](./tests/nginx/demo.gif)
@@ -382,6 +388,82 @@ Port ranges can be specified in policy.json using `port_start` and `port_end`:
 5. All future syscalls check `task_storage` + `role_flags` for enforcement
 6. Child processes inherit via `task_alloc` hook
 
+## Installation Modes
+
+BpfJailer supports two installation modes:
+
+### 1. Daemon Mode (Standard)
+
+Uses a running daemon for enrollment and policy management:
+
+```bash
+# Install systemd service
+sudo cp config/bpfjailer-daemon.service /etc/systemd/system/
+sudo cp target/release/bpfjailer-daemon /usr/sbin/
+sudo mkdir -p /etc/bpfjailer
+sudo cp config/policy.json /etc/bpfjailer/
+
+# Enable and start
+sudo systemctl daemon-reload
+sudo systemctl enable bpfjailer-daemon
+sudo systemctl start bpfjailer-daemon
+```
+
+**Features:**
+- Socket-based enrollment API
+- Hot policy reload (stop/start daemon)
+- Full logging in daemon process
+
+### 2. Daemonless Mode (Bootstrap)
+
+Loads BPF programs at early boot and exits. Programs remain active until reboot:
+
+```bash
+# Install bootstrap service
+sudo cp config/bpfjailer-bootstrap.service /etc/systemd/system/
+sudo cp target/release/bpfjailer-bootstrap /usr/sbin/
+sudo mkdir -p /etc/bpfjailer
+sudo cp config/policy.json /etc/bpfjailer/
+
+# Enable (will run at next boot)
+sudo systemctl daemon-reload
+sudo systemctl enable bpfjailer-bootstrap
+
+# Or run manually now
+sudo bpfjailer-bootstrap
+```
+
+**Features:**
+- No running daemon (reduced attack surface)
+- BPF programs pinned to `/sys/fs/bpf/bpfjailer/`
+- Cannot be stopped without reboot
+- Audit events sent to systemd-journald via perf buffer
+- Only alternative enrollment methods work (exec/cgroup/xattr)
+
+**Check pinned programs:**
+```bash
+ls -la /sys/fs/bpf/bpfjailer/
+ls -la /sys/fs/bpf/bpfjailer/maps/
+ls -la /sys/fs/bpf/bpfjailer/progs/
+```
+
+**View audit events:**
+```bash
+# Events are emitted to perf buffer, picked up by journald
+journalctl -f | grep bpfjailer
+```
+
+### Mode Comparison
+
+| Aspect | Daemon Mode | Daemonless Mode |
+|--------|-------------|-----------------|
+| Attack Surface | Running daemon | No running process |
+| Enrollment | Unix socket + alternatives | Alternatives only |
+| Policy Updates | Hot reload | Reboot required |
+| Audit Logging | Daemon reads ringbuf | journald via perf buffer |
+| Program Removal | Stop daemon | Reboot only |
+| Boot Order | After network.target | Before basic.target |
+
 ## Troubleshooting
 
 ### "task_storage map creation failed"
@@ -494,7 +576,3 @@ getfattr -d /path/to/binary
 ## License
 
 GPL-2.0 (required for BPF programs)
-
-## Acknowledgments
-
-This project is based on the original idea and design by **Liam Wisehart** at **Meta**. Special thanks for the vision and foundational work that made BpfJailer possible.
