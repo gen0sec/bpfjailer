@@ -26,6 +26,9 @@ pub struct PolicyFlags {
     pub allow_module_load: bool,
     #[serde(default)]
     pub allow_bpf_load: bool,
+    /// Require all network traffic to go through a configured proxy
+    #[serde(default)]
+    pub require_proxy: bool,
 }
 
 impl Default for PolicyFlags {
@@ -39,6 +42,7 @@ impl Default for PolicyFlags {
             allow_ptrace: false,
             allow_module_load: false,
             allow_bpf_load: false,
+            require_proxy: false,
         }
     }
 }

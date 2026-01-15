@@ -35,6 +35,8 @@ TESTS = [
     ("wildcard_access", "Wildcard Path Matching"),
     ("auto_enrollment", "Auto-Enrollment Methods"),
     ("tee_protection", "TEE Protection (ptrace, module, BPF blocking)"),
+    ("ai_agent_egress", "AI Agent Egress Control (IP/domain filtering)"),
+    ("ai_agent_secrets", "AI Agent Secrets Protection"),
 ]
 
 ROLES = {
@@ -49,6 +51,7 @@ ROLES = {
     9: ("sandbox", "Allows file, blocks network and exec (sandboxed processing)"),
     10: ("wildcard_test", "Tests wildcard path matching rules"),
     11: ("tee_protected", "TEE: blocks ptrace, module load, BPF operations"),
+    12: ("ai_agent", "AI Agent: secrets protection, IP/domain filtering, proxy enforcement"),
 }
 
 def enroll(pod_id: int, role_id: int) -> bool:

@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use bpfjailer_common::{NetworkRule, PathPattern, PodId, PolicyFlags, RoleId};
+use bpfjailer_common::{DomainRule, IpRule, NetworkRule, PathPattern, PodId, PolicyFlags, ProxyConfig, RoleId};
 use log::{debug, info, warn};
 use std::sync::Arc;
 use crate::bpf_loader::BpfJailerBpf;
@@ -170,6 +170,60 @@ impl ProcessTracker {
             info!(
                 "Applied path rule: role={} path=\"{}\" allow={}",
                 role_id.0, path, rule.allow
+            );
+        }
+        Ok(())
+    }
+
+    // =========================================================================
+    // AI Agent Security Features
+    // =========================================================================
+
+    /// Add an IP/CIDR rule for egress filtering
+    pub fn add_ip_rule(&self, role_id: RoleId, cidr: &str, direction: u8, allowed: bool) -> Result<()> {
+        self.bpf.add_ip_rule(role_id.0, cidr, direction, allowed)
+            .context("Failed to add IP rule")
+    }
+
+    /// Apply IP rules from a Role definition
+    pub fn apply_ip_rules(&self, role_id: RoleId, rules: &[IpRule]) -> Result<()> {
+        for rule in rules {
+            let direction = match rule.direction.to_lowercase().as_str() {
+                "bind" => DIR_BIND,
+                "connect" => DIR_CONNECT,
+                _ => DIR_CONNECT,  // Default to connect for egress control
+            };
+
+            self.add_ip_rule(role_id, &rule.cidr, direction, rule.allow)?;
+
+            info!(
+                "Applied IP rule: role={} cidr={} direction={} allow={}",
+                role_id.0, rule.cidr, rule.direction, rule.allow
+            );
+        }
+        Ok(())
+    }
+
+    /// Configure proxy requirement for a role
+    pub fn set_proxy_config(&self, role_id: RoleId, config: &ProxyConfig) -> Result<()> {
+        self.bpf.set_proxy_config(role_id.0, &config.address, config.required)
+            .context("Failed to set proxy config")
+    }
+
+    /// Add a domain rule for egress filtering
+    pub fn add_domain_rule(&self, role_id: RoleId, domain: &str, allowed: bool) -> Result<()> {
+        self.bpf.add_domain_rule(role_id.0, domain, allowed)
+            .context("Failed to add domain rule")
+    }
+
+    /// Apply domain rules from a Role definition
+    pub fn apply_domain_rules(&self, role_id: RoleId, rules: &[DomainRule]) -> Result<()> {
+        for rule in rules {
+            self.add_domain_rule(role_id, &rule.domain, rule.allow)?;
+
+            info!(
+                "Applied domain rule: role={} domain={} allow={}",
+                role_id.0, rule.domain, rule.allow
             );
         }
         Ok(())

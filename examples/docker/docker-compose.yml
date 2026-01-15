@@ -1,0 +1,108 @@
+# BpfJailer Docker Compose Example for AI Agents
+#
+# This example demonstrates running AI agents with BpfJailer security controls.
+# The bpfjailer service runs as a privileged sidecar that enforces security policies
+# on the ai-agent container via kernel BPF programs.
+#
+# Usage:
+#   docker-compose up -d
+#   docker-compose logs -f ai-agent
+#
+# Architecture:
+#   +-----------------------+      +------------------------+
+#   |   bpfjailer (priv)    |      |   ai-agent (unpriv)    |
+#   |   - Loads BPF progs   |      |   - Python AI agent    |
+#   |   - Manages policies  |----->|   - Enrolled via cgroup|
+#   |   - Shares host PID   |      |   - Restricted egress  |
+#   +-----------------------+      +------------------------+
+#              |                              |
+#              v                              v
+#   +--------------------------------------------------+
+#   |              Host Kernel (BPF LSM)               |
+#   +--------------------------------------------------+
+
+services:
+  # BpfJailer daemon - runs with elevated privileges to load BPF programs
+  bpfjailer:
+    build:
+      context: ../..
+      dockerfile: examples/docker/Dockerfile.bpfjailer
+    container_name: bpfjailer
+    privileged: true
+    pid: host
+    network_mode: host
+    volumes:
+      # BPF filesystem for program pinning
+      - /sys/fs/bpf:/sys/fs/bpf
+      # BTF type information for CO-RE
+      - /sys/kernel/btf:/sys/kernel/btf:ro
+      # Cgroup filesystem for container enrollment
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      # Policy configuration
+      - ./policy.json:/etc/bpfjailer/policy.json:ro
+      # Enrollment socket (shared with other containers)
+      - bpfjailer-sock:/run/bpfjailer
+    environment:
+      - RUST_LOG=info
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "test", "-S", "/run/bpfjailer/enrollment.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # AI Agent container - runs unprivileged with BpfJailer protection
+  ai-agent:
+    image: python:3.11-slim
+    container_name: ai-agent
+    command: python /app/agent.py
+    volumes:
+      - ./agent:/app:ro
+      - bpfjailer-sock:/run/bpfjailer:ro
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      bpfjailer:
+        condition: service_healthy
+    networks:
+      default:
+        ipv4_address: 172.28.0.20
+    # Keep running for tests
+    tty: true
+    stdin_open: true
+
+  # HTTP proxy for egress control testing
+  proxy:
+    image: alpine:3.19
+    container_name: ai-proxy
+    command: >
+      sh -c "apk add --no-cache tinyproxy &&
+             echo 'Port 3128' > /etc/tinyproxy.conf &&
+             echo 'Listen 0.0.0.0' >> /etc/tinyproxy.conf &&
+             echo 'Allow 0.0.0.0/0' >> /etc/tinyproxy.conf &&
+             echo 'Timeout 60' >> /etc/tinyproxy.conf &&
+             echo 'MaxClients 50' >> /etc/tinyproxy.conf &&
+             tinyproxy -d -c /etc/tinyproxy.conf"
+    expose:
+      - "3128"
+    networks:
+      default:
+        ipv4_address: 172.28.0.10
+    healthcheck:
+      test: ["CMD", "sh", "-c", "pgrep tinyproxy"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 15s
+
+volumes:
+  bpfjailer-sock:
+    driver: local
+
+networks:
+  default:
+    name: ai-agent-network
+    ipam:
+      config:
+        - subnet: 172.28.0.0/16

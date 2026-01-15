@@ -112,6 +112,23 @@ impl BpfJailerBpf {
             log::info!("✓ cgroup_enrollment map available for cgroup-based enrollment");
         }
 
+        // AI agent security maps
+        if object.map("ip_rules").is_some() {
+            log::info!("✓ ip_rules map available for IP/CIDR filtering");
+        }
+        if object.map("proxy_config").is_some() {
+            log::info!("✓ proxy_config map available for proxy enforcement");
+        }
+        if object.map("domain_rules").is_some() {
+            log::info!("✓ domain_rules map available for domain filtering");
+        }
+        if object.map("dns_cache").is_some() {
+            log::info!("✓ dns_cache map available for DNS tracking");
+        }
+        if object.map("dns_pending").is_some() {
+            log::info!("✓ dns_pending map available for DNS query tracking");
+        }
+
         // Note: task_storage map is automatically handled by libbpf-rs
         // It's created but we don't need to access it from userspace
         if object.map("task_storage").is_some() {
@@ -125,6 +142,7 @@ impl BpfJailerBpf {
             "file_open",
             "socket_bind",
             "socket_connect",
+            "socket_sendmsg",
             "bprm_check_security",
             "path_rename",
             "sb_mount",
@@ -463,6 +481,199 @@ impl BpfJailerBpf {
         let key = cgroup_id.to_ne_bytes();
         map.delete(&key)?;
         log::info!("Removed cgroup enrollment for cgroup_id={}", cgroup_id);
+        Ok(())
+    }
+
+    // =========================================================================
+    // AI Agent Security Features
+    // =========================================================================
+
+    /// Add an IP/CIDR rule for egress filtering
+    /// cidr: IP address or CIDR notation (e.g., "10.0.0.0/8", "192.168.1.1")
+    /// direction: 0 = bind, 1 = connect
+    /// allowed: true = allow, false = deny
+    pub fn add_ip_rule(&self, role_id: u32, cidr: &str, direction: u8, allowed: bool) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("ip_rules")
+            .ok_or_else(|| anyhow::anyhow!("ip_rules map not found"))?;
+
+        // Parse CIDR notation
+        let (ip_str, prefix_len) = if let Some(slash_pos) = cidr.find('/') {
+            let (ip, prefix) = cidr.split_at(slash_pos);
+            let prefix_len: u8 = prefix[1..].parse()
+                .map_err(|_| anyhow::anyhow!("Invalid prefix length in CIDR: {}", cidr))?;
+            (ip, prefix_len)
+        } else {
+            (cidr, 32u8)  // Single IP = /32
+        };
+
+        // Parse IP address
+        let ip_addr: std::net::Ipv4Addr = ip_str.parse()
+            .map_err(|_| anyhow::anyhow!("Invalid IPv4 address: {}", ip_str))?;
+        let ip_bytes = ip_addr.octets();
+
+        // Create mask and apply in network byte order
+        // The IP in sin_addr.s_addr is stored in network byte order (big endian)
+        // When read into a u32 on little-endian, it stays as raw bytes
+        let mask = if prefix_len < 32 && prefix_len > 0 {
+            !0u32 << (32 - prefix_len)
+        } else if prefix_len == 0 {
+            0u32
+        } else {
+            !0u32
+        };
+
+        // Apply mask in host byte order then convert to network byte order for storage
+        let ip_native = u32::from_be_bytes(ip_bytes);
+        let masked_native = ip_native & mask;
+        // Store as raw bytes (network byte order) - same format as sin_addr.s_addr
+        let masked_bytes = masked_native.to_be_bytes();
+
+        // struct ip_rule_key { u32 role_id; u32 ip_addr; u8 prefix_len; u8 direction; u8 _pad[2]; }
+        let mut key = [0u8; 12];
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        // Store IP in network byte order (raw bytes) to match what BPF reads from sin_addr
+        key[4..8].copy_from_slice(&masked_bytes);
+        key[8] = prefix_len;
+        key[9] = direction;
+
+        let value = [if allowed { 1u8 } else { 0u8 }];
+        map.update(&key, &value, MapFlags::empty())?;
+
+        let dir_name = if direction == 0 { "bind" } else { "connect" };
+        let action = if allowed { "ALLOW" } else { "DENY" };
+        log::info!("IP rule: role={} {} {} -> {}", role_id, cidr, dir_name, action);
+
+        Ok(())
+    }
+
+    /// Remove an IP/CIDR rule
+    #[allow(dead_code)]
+    pub fn remove_ip_rule(&self, role_id: u32, cidr: &str, direction: u8) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("ip_rules")
+            .ok_or_else(|| anyhow::anyhow!("ip_rules map not found"))?;
+
+        let (ip_str, prefix_len) = if let Some(slash_pos) = cidr.find('/') {
+            let (ip, prefix) = cidr.split_at(slash_pos);
+            let prefix_len: u8 = prefix[1..].parse()?;
+            (ip, prefix_len)
+        } else {
+            (cidr, 32u8)
+        };
+
+        let ip_addr: std::net::Ipv4Addr = ip_str.parse()?;
+        let ip_bytes = ip_addr.octets();
+        let ip_u32 = u32::from_be_bytes(ip_bytes);
+
+        let masked_ip = if prefix_len < 32 {
+            let mask = !0u32 << (32 - prefix_len);
+            u32::from_be_bytes((u32::from_be_bytes(ip_bytes) & mask).to_be_bytes())
+        } else {
+            ip_u32
+        };
+
+        let mut key = [0u8; 12];
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        key[4..8].copy_from_slice(&masked_ip.to_ne_bytes());
+        key[8] = prefix_len;
+        key[9] = direction;
+
+        map.delete(&key)?;
+        log::info!("Removed IP rule: role={} {}", role_id, cidr);
+        Ok(())
+    }
+
+    /// Configure proxy requirement for a role
+    /// proxy_addr: "host:port" format (e.g., "127.0.0.1:8080")
+    /// required: if true, all connections must go through the proxy
+    pub fn set_proxy_config(&self, role_id: u32, proxy_addr: &str, required: bool) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("proxy_config")
+            .ok_or_else(|| anyhow::anyhow!("proxy_config map not found"))?;
+
+        // Parse proxy address
+        let parts: Vec<&str> = proxy_addr.split(':').collect();
+        if parts.len() != 2 {
+            return Err(anyhow::anyhow!("Invalid proxy address format: {}", proxy_addr));
+        }
+
+        let proxy_ip: std::net::Ipv4Addr = parts[0].parse()
+            .map_err(|_| anyhow::anyhow!("Invalid proxy IP: {}", parts[0]))?;
+        let proxy_port: u16 = parts[1].parse()
+            .map_err(|_| anyhow::anyhow!("Invalid proxy port: {}", parts[1]))?;
+
+        let ip_bytes = proxy_ip.octets();
+        let ip_u32 = u32::from_be_bytes(ip_bytes);
+
+        let key = role_id.to_ne_bytes();
+
+        // struct proxy_config { u32 proxy_ip; u16 proxy_port; u8 require_proxy; u8 _pad; }
+        let mut value = [0u8; 8];
+        value[0..4].copy_from_slice(&ip_u32.to_ne_bytes());
+        value[4..6].copy_from_slice(&proxy_port.to_ne_bytes());
+        value[6] = if required { 1 } else { 0 };
+
+        map.update(&key, &value, MapFlags::empty())?;
+
+        let mode = if required { "REQUIRED" } else { "OPTIONAL" };
+        log::info!("Proxy config: role={} {} -> {}", role_id, proxy_addr, mode);
+
+        Ok(())
+    }
+
+    /// Remove proxy configuration for a role
+    #[allow(dead_code)]
+    pub fn remove_proxy_config(&self, role_id: u32) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("proxy_config")
+            .ok_or_else(|| anyhow::anyhow!("proxy_config map not found"))?;
+
+        let key = role_id.to_ne_bytes();
+        map.delete(&key)?;
+        log::info!("Removed proxy config for role={}", role_id);
+        Ok(())
+    }
+
+    /// Add a domain rule for egress filtering
+    /// domain: Domain name (e.g., "api.openai.com")
+    /// allowed: true = allow, false = deny
+    pub fn add_domain_rule(&self, role_id: u32, domain: &str, allowed: bool) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("domain_rules")
+            .ok_or_else(|| anyhow::anyhow!("domain_rules map not found"))?;
+
+        let domain_hash = djb2_hash_u32(domain);
+
+        // struct domain_rule_key { u32 role_id; u32 domain_hash; }
+        let mut key = [0u8; 8];
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        key[4..8].copy_from_slice(&domain_hash.to_ne_bytes());
+
+        let value = [if allowed { 1u8 } else { 0u8 }];
+        map.update(&key, &value, MapFlags::empty())?;
+
+        let action = if allowed { "ALLOW" } else { "DENY" };
+        log::info!("Domain rule: role={} {} (hash={:#x}) -> {}", role_id, domain, domain_hash, action);
+
+        Ok(())
+    }
+
+    /// Remove a domain rule
+    #[allow(dead_code)]
+    pub fn remove_domain_rule(&self, role_id: u32, domain: &str) -> Result<()> {
+        let object = self.object.lock().unwrap();
+        let map = object.map("domain_rules")
+            .ok_or_else(|| anyhow::anyhow!("domain_rules map not found"))?;
+
+        let domain_hash = djb2_hash_u32(domain);
+
+        let mut key = [0u8; 8];
+        key[0..4].copy_from_slice(&role_id.to_ne_bytes());
+        key[4..8].copy_from_slice(&domain_hash.to_ne_bytes());
+
+        map.delete(&key)?;
+        log::info!("Removed domain rule: role={} {}", role_id, domain);
         Ok(())
     }
 

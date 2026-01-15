@@ -30,11 +30,15 @@ impl PolicyManager {
                 allow_ptrace: false,
                 allow_module_load: false,
                 allow_bpf_load: false,
+                require_proxy: false,
             },
             file_paths: vec![],
             network_rules: vec![],
             execution_rules: vec![],
             require_signed_binary: false,
+            ip_rules: vec![],
+            domain_rules: vec![],
+            proxy: None,
         };
 
         // Role 2: Permissive - allows everything
@@ -50,11 +54,15 @@ impl PolicyManager {
                 allow_ptrace: false,
                 allow_module_load: true,
                 allow_bpf_load: true,
+                require_proxy: false,
             },
             file_paths: vec![],
             network_rules: vec![],
             execution_rules: vec![],
             require_signed_binary: false,
+            ip_rules: vec![],
+            domain_rules: vec![],
+            proxy: None,
         };
 
         config.roles.insert("restricted".to_string(), restricted_role.clone());
