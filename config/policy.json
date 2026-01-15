@@ -224,6 +224,60 @@
       "network_rules": [],
       "execution_rules": [],
       "require_signed_binary": false
+    },
+    "ai_agent": {
+      "id": 12,
+      "name": "ai_agent",
+      "flags": {
+        "allow_file_access": true,
+        "allow_network": true,
+        "allow_exec": false,
+        "require_signed_binary": false,
+        "allow_setuid": false,
+        "allow_ptrace": false,
+        "allow_module_load": false,
+        "allow_bpf_load": false,
+        "require_proxy": true
+      },
+      "file_paths": [
+        {"pattern": "/proc/", "allow": false},
+        {"pattern": "/.ssh/", "allow": false},
+        {"pattern": "/.aws/", "allow": false},
+        {"pattern": "/.config/gcloud/", "allow": false},
+        {"pattern": "/.azure/", "allow": false},
+        {"pattern": "/.kube/", "allow": false},
+        {"pattern": "/.docker/", "allow": false},
+        {"pattern": "/etc/shadow", "allow": false},
+        {"pattern": "/etc/gshadow", "allow": false},
+        {"pattern": "/etc/ssl/private/", "allow": false},
+        {"pattern": "/.npmrc", "allow": false},
+        {"pattern": "/.git-credentials", "allow": false},
+        {"pattern": "/.netrc", "allow": false},
+        {"pattern": "/.gnupg/", "allow": false},
+        {"pattern": "/workspace/", "allow": true},
+        {"pattern": "/tmp/", "allow": true}
+      ],
+      "network_rules": [
+        {"protocol": "tcp", "port": 443, "allow": true},
+        {"protocol": "tcp", "port": 80, "allow": true}
+      ],
+      "execution_rules": [],
+      "require_signed_binary": false,
+      "ip_rules": [
+        {"cidr": "10.0.0.0/8", "direction": "connect", "allow": false},
+        {"cidr": "172.16.0.0/12", "direction": "connect", "allow": false},
+        {"cidr": "192.168.0.0/16", "direction": "connect", "allow": false},
+        {"cidr": "127.0.0.1/32", "direction": "connect", "allow": true}
+      ],
+      "domain_rules": [
+        {"domain": "api.openai.com", "allow": true},
+        {"domain": "api.anthropic.com", "allow": true},
+        {"domain": "generativelanguage.googleapis.com", "allow": true}
+      ],
+      "proxy": {
+        "address": "127.0.0.1:8080",
+        "required": true
+      }
     }
   },
   "pods": [],

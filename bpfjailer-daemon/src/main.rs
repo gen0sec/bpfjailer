@@ -80,6 +80,35 @@ async fn main() -> Result<()> {
         }
     }
 
+    // Apply IP rules, domain rules, and proxy config from policy
+    {
+        let pm = policy_manager.read().await;
+        for (_name, role) in pm.config().roles.iter() {
+            let role_id = role.id;
+
+            // Apply IP rules
+            if !role.ip_rules.is_empty() {
+                if let Err(e) = process_tracker.apply_ip_rules(role_id, &role.ip_rules) {
+                    warn!("Failed to apply IP rules for role {}: {}", role_id.0, e);
+                }
+            }
+
+            // Apply domain rules
+            if !role.domain_rules.is_empty() {
+                if let Err(e) = process_tracker.apply_domain_rules(role_id, &role.domain_rules) {
+                    warn!("Failed to apply domain rules for role {}: {}", role_id.0, e);
+                }
+            }
+
+            // Apply proxy config
+            if let Some(ref proxy) = role.proxy {
+                if let Err(e) = process_tracker.set_proxy_config(role_id, proxy) {
+                    warn!("Failed to set proxy config for role {}: {}", role_id.0, e);
+                }
+            }
+        }
+    }
+
     // Initialize alternative enrollment methods
     let alt_enrollment = Arc::new(enrollment_alternatives::AlternativeEnrollment::new(
         bpf.clone(),

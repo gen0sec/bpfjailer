@@ -1,0 +1,62 @@
+# BpfJailer Docker Image
+# This container runs the BpfJailer daemon with kernel BPF access
+#
+# Build: docker build -t bpfjailer -f Dockerfile.bpfjailer ../..
+# Run:   docker run --privileged --pid=host -v /sys/fs/bpf:/sys/fs/bpf bpfjailer
+
+FROM rust:1.82-bookworm AS builder
+
+# Install dependencies for BPF compilation
+RUN apt-get update && apt-get install -y \
+    clang \
+    llvm \
+    libelf-dev \
+    libbpf-dev \
+    linux-headers-generic \
+    pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /build
+
+# Copy the entire project
+COPY . .
+
+# Build the daemon (release mode)
+RUN cargo build --release --package bpfjailer-daemon
+
+# Build the BPF program
+RUN cargo build --release --package bpfjailer-bpf && \
+    find /build -name "bpfjailer.bpf.o" -type f && \
+    mkdir -p /build/target/bpfel-unknown-none/release && \
+    cp $(find /build -name "bpfjailer.bpf.o" -type f | head -1) /build/target/bpfel-unknown-none/release/ || true
+
+# Runtime image
+FROM debian:bookworm-slim
+
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    libelf1 \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /opt/bpfjailer
+
+# Copy built binaries
+COPY --from=builder /build/target/release/bpfjailer-daemon /opt/bpfjailer/
+COPY --from=builder /build/target/bpfel-unknown-none/release/bpfjailer.bpf.o /opt/bpfjailer/target/bpfel-unknown-none/release/
+
+# Copy default policy
+COPY config/policy.json /etc/bpfjailer/policy.json
+
+# Create required directories
+RUN mkdir -p /run/bpfjailer /sys/fs/bpf
+
+# Set environment
+ENV RUST_LOG=info
+ENV BPFJAILER_POLICY=/etc/bpfjailer/policy.json
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD test -S /run/bpfjailer/enrollment.sock || exit 1
+
+# Run the daemon
+ENTRYPOINT ["/opt/bpfjailer/bpfjailer-daemon"]

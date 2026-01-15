@@ -173,6 +173,74 @@ struct {
 } cgroup_enrollment SEC(".maps");
 
 // =============================================================================
+// IP/CIDR Egress Filtering
+// =============================================================================
+// Supports IPv4 address-based filtering with CIDR prefix matching
+
+// IP rule key: role_id + IP address + prefix length
+struct ip_rule_key {
+    u32 role_id;
+    u32 ip_addr;      // IPv4 in network byte order
+    u8 prefix_len;    // CIDR prefix (e.g., 24 for /24)
+    u8 direction;     // 0 = bind, 1 = connect
+    u8 _pad[2];
+};
+
+// IP rules map: key -> allowed (1) or blocked (0)
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct ip_rule_key);
+    __type(value, u8);
+} ip_rules SEC(".maps");
+
+// Proxy configuration per role
+struct proxy_config {
+    u32 proxy_ip;     // Proxy IPv4 address
+    u16 proxy_port;   // Proxy port
+    u8 require_proxy; // 1 = force all traffic through proxy
+    u8 _pad;
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 256);
+    __type(key, u32);  // role_id
+    __type(value, struct proxy_config);
+} proxy_config SEC(".maps");
+
+// Domain rules map: hash of domain -> allowed (1) or blocked (0)
+struct domain_rule_key {
+    u32 role_id;
+    u32 domain_hash;  // djb2 hash of domain name
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_HASH);
+    __uint(max_entries, 4096);
+    __type(key, struct domain_rule_key);
+    __type(value, u8);
+} domain_rules SEC(".maps");
+
+// DNS cache: maps resolved IP -> domain hash (populated by DNS interception)
+struct dns_cache_key {
+    u32 role_id;
+    u32 ip_addr;      // Resolved IP address
+};
+
+struct dns_cache_value {
+    u32 domain_hash;  // Hash of the domain that resolved to this IP
+    u64 timestamp;    // When this entry was added (for TTL)
+};
+
+struct {
+    __uint(type, BPF_MAP_TYPE_LRU_HASH);
+    __uint(max_entries, 8192);
+    __type(key, struct dns_cache_key);
+    __type(value, struct dns_cache_value);
+} dns_cache SEC(".maps");
+
+// =============================================================================
 // Audit Events (Perf Buffer for systemd-journald integration)
 // =============================================================================
 // Used in daemonless mode - events are picked up by journald or logging daemon
@@ -325,12 +393,15 @@ static __always_inline int check_path_state_machine(u32 role_id, struct path_com
             break;
 
         // Index from end to start (root to file)
-        int idx = count - 1 - i;
-        if (idx < 0)
+        // Use unsigned to help verifier with bounds
+        u32 idx = (u32)(count - 1 - i);
+
+        // Explicit bounds check for BPF verifier
+        if (idx >= MAX_COMPONENTS)
             break;
 
         key.state = state;
-        key.component_hash = buf->hashes[idx];
+        key.component_hash = buf->hashes[idx & (MAX_COMPONENTS - 1)];
 
         struct path_state_value *val = bpf_map_lookup_elem(&path_states, &key);
 
@@ -513,6 +584,116 @@ static __always_inline u16 bpf_ntohs(__be16 val)
     return (val >> 8) | (val << 8);
 }
 
+// Helper to check if IP matches a CIDR rule
+// ip_addr and rule_ip should both be in network byte order
+static __always_inline int ip_matches_cidr(u32 ip_addr, u32 rule_ip, u8 prefix_len)
+{
+    if (prefix_len == 0) {
+        return 1;  // /0 matches everything
+    }
+    if (prefix_len >= 32) {
+        return ip_addr == rule_ip;
+    }
+
+    // Create mask for prefix_len bits (in network byte order)
+    // Network byte order is big-endian, so mask from MSB
+    u32 mask = 0;
+    #pragma unroll
+    for (int i = 0; i < 32; i++) {
+        if (i < prefix_len) {
+            mask |= (1 << (31 - i));
+        }
+    }
+    // Convert mask to network byte order
+    mask = __builtin_bswap32(mask);
+
+    return (ip_addr & mask) == (rule_ip & mask);
+}
+
+// Check IP-based egress rules
+// Returns: 1 = explicit allow, 0 = no rule, -13 = explicit deny
+static __always_inline int check_ip_access(u32 role_id, u32 ip_addr, u8 direction)
+{
+    // Check exact IP match first (prefix_len = 32)
+    struct ip_rule_key key = {
+        .role_id = role_id,
+        .ip_addr = ip_addr,
+        .prefix_len = 32,
+        .direction = direction,
+    };
+
+    u8 *rule = bpf_map_lookup_elem(&ip_rules, &key);
+    if (rule) {
+        return *rule ? 1 : -13;
+    }
+
+    // Check common CIDR prefixes (24, 16, 12, 8, 0)
+    // Note: Full LPM would require BPF_MAP_TYPE_LPM_TRIE, this is simplified
+    u8 prefixes[] = {24, 16, 12, 8, 0};
+    #pragma unroll
+    for (int i = 0; i < 5; i++) {
+        u8 prefix = prefixes[i];
+
+        // Mask the IP to get network address
+        u32 mask = 0;
+        if (prefix > 0) {
+            #pragma unroll
+            for (int j = 0; j < 32; j++) {
+                if (j < prefix) {
+                    mask |= (1 << (31 - j));
+                }
+            }
+            mask = __builtin_bswap32(mask);
+        }
+
+        key.ip_addr = ip_addr & mask;
+        key.prefix_len = prefix;
+
+        rule = bpf_map_lookup_elem(&ip_rules, &key);
+        if (rule) {
+            return *rule ? 1 : -13;
+        }
+    }
+
+    return 0;  // No rule found
+}
+
+// Check if connection is to the configured proxy
+static __always_inline int is_proxy_connection(u32 role_id, u32 ip_addr, u16 port)
+{
+    struct proxy_config *config = bpf_map_lookup_elem(&proxy_config, &role_id);
+    if (!config || !config->require_proxy) {
+        return 0;  // No proxy requirement
+    }
+
+    // Check if destination is the proxy
+    return (ip_addr == config->proxy_ip && port == config->proxy_port);
+}
+
+// Check proxy enforcement
+// Returns: 0 = allowed, -13 = blocked (not going through proxy)
+static __always_inline int check_proxy_requirement(u32 role_id, u32 ip_addr, u16 port)
+{
+    struct proxy_config *config = bpf_map_lookup_elem(&proxy_config, &role_id);
+    if (!config || !config->require_proxy) {
+        return 0;  // No proxy requirement, allow
+    }
+
+    // If proxy is required, only allow connections to the proxy itself
+    if (ip_addr == config->proxy_ip && port == config->proxy_port) {
+        return 0;  // Connection to proxy is allowed
+    }
+
+    // Also allow localhost connections (for local services)
+    // 127.0.0.0/8 in network byte order
+    u32 localhost_mask = 0x000000FF;  // 127.x.x.x in network byte order (big endian)
+    if ((ip_addr & localhost_mask) == 0x0000007F) {
+        return 0;  // Localhost allowed
+    }
+
+    return -13;  // Block non-proxy connections
+}
+
 // Check network access based on port/protocol rules
 // Returns: 1 = explicit allow, 0 = no rule (defer to role_flags), -13 = explicit deny
 static __always_inline int check_network_access(u32 role_id, struct socket *sock,
@@ -637,6 +818,50 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
         return -13;
     }
 
+    // Extract IP address and port for additional checks
+    u32 dest_ip = 0;
+    u16 dest_port = 0;
+    unsigned short family = 0;
+    bpf_probe_read_kernel(&family, sizeof(family), &address->sa_family);
+
+    if (family == AF_INET) {
+        struct sockaddr_in *addr4 = (struct sockaddr_in *)address;
+        bpf_probe_read_kernel(&dest_ip, sizeof(dest_ip), &addr4->sin_addr.s_addr);
+        __be16 be_port = 0;
+        bpf_probe_read_kernel(&be_port, sizeof(be_port), &addr4->sin_port);
+        dest_port = bpf_ntohs(be_port);
+    } else if (family == AF_INET6) {
+        // For IPv6, extract the port (IP filtering is IPv4 only for now)
+        struct sockaddr_in6 *addr6 = (struct sockaddr_in6 *)address;
+        __be16 be_port = 0;
+        bpf_probe_read_kernel(&be_port, sizeof(be_port), &addr6->sin6_port);
+        dest_port = bpf_ntohs(be_port);
+    }
+
+    // Check proxy requirement first (if configured)
+    if (dest_ip != 0) {
+        int proxy_result = check_proxy_requirement(info->role_id, dest_ip, dest_port);
+        if (proxy_result == -13) {
+            emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                             AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, dest_ip);
+            return -13;  // Blocked: not going through required proxy
+        }
+    }
+
+    // Check IP-based rules (only for IPv4)
+    if (dest_ip != 0) {
+        int ip_result = check_ip_access(info->role_id, dest_ip, 1);  // direction=1 for connect
+        if (ip_result == -13) {
+            emit_audit_event(ctx, pid, info->role_id, info->pod_id,
+                             AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, dest_ip);
+            return -13;  // IP explicitly blocked
+        }
+        if (ip_result == 1) {
+            return 0;  // IP explicitly allowed
+        }
+    }
+
+    // Fall back to port/protocol rules
     int result = check_network_access(info->role_id, sock, address, 1);
 
     if (!(*flags & 0x02)) {
@@ -645,14 +870,14 @@ int BPF_PROG(socket_connect, struct socket *sock, struct sockaddr *address, int 
             return 0;  // Explicit allow overrides role_flags
         }
         emit_audit_event(ctx, pid, info->role_id, info->pod_id,
-                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, 0);
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, dest_ip);
         return -13;  // No rule or explicit deny -> block
     }
 
     // Network allowed by role - only block if explicit deny rule (result=-13)
     if (result == -13) {
         emit_audit_event(ctx, pid, info->role_id, info->pod_id,
-                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, 0);
+                         AUDIT_DECISION_DENY, AUDIT_HOOK_SOCKET_CONNECT, dest_ip);
         return -13;  // Explicit deny overrides role_flags
     }
     return 0;
@@ -873,6 +1098,27 @@ int BPF_PROG(bpf, int cmd, union bpf_attr *attr, unsigned int size)
         return -1;
     }
 
+    return 0;
+}
+
+// =============================================================================
+// DNS Interception for Domain-based Filtering (Simplified)
+// =============================================================================
+// Note: Full DNS parsing is too complex for BPF verifier.
+// Domain filtering is handled at IP level via dns_cache populated by userspace.
+
+#define DNS_PORT 53
+#define AUDIT_HOOK_DNS_QUERY 6
+
+// Simplified socket_sendmsg hook - just monitors DNS traffic
+// Full domain parsing would be done in userspace via audit events
+SEC("lsm/socket_sendmsg")
+int BPF_PROG(socket_sendmsg, struct socket *sock, struct msghdr *msg, int size)
+{
+    // For now, allow all sendmsg - domain filtering relies on:
+    // 1. IP rules blocking private networks
+    // 2. Userspace DNS proxy for domain-level filtering
+    // Full BPF DNS parsing requires kernel 5.19+ with more helper functions
     return 0;
 }
 
